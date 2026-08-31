@@ -102,10 +102,23 @@ sinh ra không phải lúc nào cũng giống tên hiển thị.
 ta dựng đúng cấu trúc mà loader mong đợi, bằng symlink (tốn ~0 dung lượng).
 
 ```python
+# Khuyên dùng: tự dò theo nội dung, khỏi phải biết slug Kaggle
+!python tools/kaggle_setup.py --dataset MAFW --auto --out /kaggle/temp/data
+```
+
+`--auto` phân loại theo **nội dung** chứ không theo tên: thư mục nào có ≥5 thư mục con
+chứa ảnh → *frames root*; thư mục nào chứa `.wav` → *audio root*; rồi lọc theo
+`mafw`/`mfaw` (hoặc `dfew`) để không lẫn hai dataset. Điều này quan trọng vì tên hiển
+thị trong sidebar Kaggle là **tiêu đề** dataset, còn đường dẫn mount dùng **slug** —
+hai thứ thường khác nhau.
+
+Chỉ định tay khi cần (lấy đường dẫn từ Cell 3):
+
+```python
 !python tools/kaggle_setup.py --dataset MAFW \
   --frames /kaggle/input/mafw-faces-native-part1/mafw_faces_native_shard0 \
            /kaggle/input/mafw-faces-native-part2/mafw_faces_native_shard1 \
-  --audio  /kaggle/input/mafw-native-rate-audio-for-mma-dfer/mfaw/clips_wav \
+  --audio  /kaggle/input/<slug-that-cell-3-printed>/mfaw/clips_wav \
   --out    /kaggle/temp/data
 ```
 
@@ -124,16 +137,11 @@ Tương tự cho DFEW (chú ý gộp cả 4 part, và script tự bỏ số 0 đ
 vì loader gọi `str(int(id))`):
 
 ```python
-!python tools/kaggle_setup.py --dataset DFEW \
-  --frames /kaggle/input/dfew-preprocessed-for-mma-dfer/dfew_frames_part1 \
-           /kaggle/input/dfew-preprocessed-for-mma-dfer/dfew_frames_part2 \
-           /kaggle/input/dfew-preprocessed-for-mma-dfer/dfew_frames_part3 \
-           /kaggle/input/dfew-preprocessed-for-mma-dfer/dfew_frames_part4 \
-  --audio  /kaggle/input/dfew-preprocessed-for-mma-dfer/dfew_audio_native \
-  --out    /kaggle/temp/data
+!python tools/kaggle_setup.py --dataset DFEW --auto --out /kaggle/temp/data
 ```
 
-Đọc kỹ dòng `clips w/o wav`. Với DFEW con số này **phải bằng 0** (không có fallback).
+Kiểm tra số `FRAMES` dò được khớp số shard đã attach (MAFW: 2, DFEW: 4).
+Rồi đọc kỹ dòng `clips w/o wav`. Với DFEW con số này **phải bằng 0** (không có fallback).
 Với MAFW phải nhỏ, nếu lớn thì audio đang chết âm thầm — xem cảnh báo ở §1.
 
 > Dùng `/kaggle/temp` chứ không phải `/kaggle/working`: symlink không tốn dung lượng

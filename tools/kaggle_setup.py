@@ -30,10 +30,68 @@ import re
 import sys
 
 JUNK = re.compile(r'(^\._|^\.DS_Store$|^__MACOSX$)')
+IMG_EXT = ('.jpg', '.jpeg', '.png', '.bmp')
+KEYWORDS = {'MAFW': ('mafw', 'mfaw'), 'DFEW': ('dfew',)}
 
 
 def is_junk(name):
     return bool(JUNK.match(name))
+
+
+def _frames_score(d):
+    """Number of clip subfolders if `d` looks like a frames root, else 0."""
+    try:
+        entries = os.listdir(d)
+    except OSError:
+        return 0
+    subdirs = [e for e in entries if not is_junk(e) and os.path.isdir(os.path.join(d, e))]
+    if len(subdirs) < 5:
+        return 0
+    hits = 0
+    for sub in subdirs[:3]:
+        try:
+            files = os.listdir(os.path.join(d, sub))
+        except OSError:
+            continue
+        if any(f.lower().endswith(IMG_EXT) for f in files if not is_junk(f)):
+            hits += 1
+    return len(subdirs) if hits >= 2 else 0
+
+
+def _wav_score(d):
+    try:
+        return sum(1 for e in os.listdir(d)
+                   if e.lower().endswith('.wav') and not is_junk(e))
+    except OSError:
+        return 0
+
+
+def discover(root='/kaggle/input', dataset=None, max_depth=4):
+    """Find frames roots and audio roots by content, so Kaggle slugs need not be guessed."""
+    frames, audio = [], []
+    if not os.path.isdir(root):
+        return frames, audio
+    for cur, dirs, _ in os.walk(root):
+        if cur[len(root):].count(os.sep) > max_depth:
+            dirs[:] = []
+            continue
+        dirs[:] = [d for d in dirs if not is_junk(d)]
+        n = _frames_score(cur)
+        if n:
+            frames.append((cur, n))
+            dirs[:] = []          # do not descend into the clip folders
+            continue
+        w = _wav_score(cur)
+        if w:
+            audio.append((cur, w))
+            dirs[:] = []
+
+    if dataset:
+        keys = KEYWORDS[dataset]
+        keep = lambda lst: [x for x in lst if any(k in x[0].lower() for k in keys)]
+        frames, audio = keep(frames), keep(audio)
+
+    return sorted(frames), sorted(audio)
 
 
 def diagnose(root='/kaggle/input', max_depth=3):
@@ -204,15 +262,45 @@ def parse_args():
     p.add_argument('--dataset', choices=['MAFW', 'DFEW'])
     p.add_argument('--frames', nargs='+', default=[], help='one or more shard directories')
     p.add_argument('--audio', nargs='+', default=[], help='directory/directories holding the .wav')
+    p.add_argument('--auto', action='store_true',
+                   help='find frames/audio roots under /kaggle/input by content, '
+                        'instead of relying on hand-typed dataset slugs')
+    p.add_argument('--input-root', default='/kaggle/input')
     p.add_argument('--out', default='/kaggle/temp/data')
     return p.parse_args()
 
 
+def autofill(args):
+    frames, audio = discover(args.input_root, args.dataset)
+    print('-- auto-discovery under {} for {} --'.format(args.input_root, args.dataset))
+    for path, n in frames:
+        print('  FRAMES  {:<70} {} clip folders'.format(path, n))
+    for path, n in audio:
+        print('  AUDIO   {:<70} {} wav'.format(path, n))
+    if not frames or not audio:
+        print('\n  !! auto-discovery came up short (frames={}, audio={}).'.format(
+            len(frames), len(audio)))
+        print('     Run --diagnose and pass --frames/--audio by hand.')
+        sys.exit(1)
+    args.frames = [p for p, _ in frames]
+    args.audio = [p for p, _ in audio]
+    print()
+    return args
+
+
 if __name__ == '__main__':
     a = parse_args()
+
     if a.diagnose or not a.dataset:
-        diagnose()
+        diagnose(a.input_root)
         if not a.dataset:
-            print('\nNow re-run with --dataset MAFW --frames <...> --audio <...>')
+            print('\nNow re-run with --dataset MAFW [--auto | --frames <...> --audio <...>]')
         sys.exit(0)
+
+    if a.auto:
+        a = autofill(a)
+    if not a.frames or not a.audio:
+        print('Need --frames and --audio, or --auto. See --diagnose.')
+        sys.exit(1)
+
     build(a)
