@@ -130,6 +130,14 @@ import torch, timm; print(torch.__version__, timm.__version__, torch.cuda.device
 API đã đổi giữa 2 major version. Torch/torchaudio thì dùng bản có sẵn của Kaggle,
 đừng cài đè (sẽ mất bản CUDA).
 
+> Torch của Kaggle mới hơn bản `2.2.0` mà `requirements.txt` ghim. Từ torch 2.6,
+> `torch.load` đổi mặc định thành `weights_only=True`, và mọi checkpoint ở đây đều
+> nhúng một `argparse.Namespace` nên sẽ bị từ chối:
+> `WeightsUnpickler error: Unsupported global: GLOBAL argparse.Namespace`.
+> Repo đã truyền `weights_only=False` ở cả 5 chỗ gọi `torch.load`
+> (`models/Generate_Model.py` ×2, `main.py`, `evaluate.py`, `tools/check_ckpt.py`),
+> nên không cần làm gì thêm — chỉ cần nhớ `git pull` để có bản vá.
+
 ### Cell 3 — xem chính xác cái gì đang được mount
 
 ```python

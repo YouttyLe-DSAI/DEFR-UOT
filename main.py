@@ -469,7 +469,7 @@ def plot_confusion_matrix(cm, classes, normalize=False, title='confusion matrix'
 
 def computer_uar_war(val_loader, model, checkpoint_path, log_confusion_matrix_path, log_txt_path, data_set, class_names):
     
-    pre_trained_dict = torch.load(checkpoint_path)['state_dict']
+    pre_trained_dict = torch.load(checkpoint_path, weights_only=False)['state_dict']
     model.load_state_dict(pre_trained_dict)
     
     model.eval()

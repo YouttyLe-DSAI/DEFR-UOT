@@ -129,7 +129,9 @@ class GenerateModel(nn.Module):
             use_custom_patch=use_custom_patch, 
             n_seq = self.n_audio, 
             n_progr = self.n_progr)
-        ckpt = torch.load(ckpt_path, map_location='cpu')
+        # weights_only defaults to True from torch 2.6; the released checkpoints
+        # embed an argparse.Namespace, so ask for the pre-2.6 behaviour.
+        ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
         ckpt = ckpt['model']
         orig_pos_embed =  ckpt['pos_embed']
         print(orig_pos_embed.shape, self.audio_model.pos_embed.shape)
@@ -158,7 +160,7 @@ class GenerateModel(nn.Module):
             n_frames=n_frames,
             )
 
-        checkpoint = torch.load(ckpt_path, map_location='cpu')
+        checkpoint = torch.load(ckpt_path, map_location='cpu', weights_only=False)
         checkpoint_model = checkpoint['model']
         orig_pos_embed =  checkpoint_model['pos_embed']
         new_posemb = resize_pos_embed(orig_pos_embed, self.image_encoder.pos_embed) # use PyTorch function linked above

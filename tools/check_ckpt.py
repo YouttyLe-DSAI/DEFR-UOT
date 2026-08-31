@@ -83,7 +83,9 @@ def main():
         print('=' * 70)
         print(path)
         try:
-            ckpt = torch.load(path, map_location='cpu')
+            # torch >= 2.6 defaults weights_only=True, which rejects the
+            # argparse.Namespace these checkpoints carry.
+            ckpt = torch.load(path, map_location='cpu', weights_only=False)
         except Exception as exc:
             print('  !! cannot load:', exc)
             continue
