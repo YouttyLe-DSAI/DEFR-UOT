@@ -54,6 +54,29 @@ so với MAFW), nên vấn đề sẽ xảy ra thật, không phải giả đị
 **Dùng `--source-prior target-matched` cho hình chính.** Muốn giữ `uniform` thì phải
 báo cáo cả hai và nói rõ gap gồm hai thành phần.
 
+## ⚠ Chiều MAFW→DFEW cần `--source-label-space full`
+
+Đề xuất mô tả chiều này là *partial adaptation*: "4 lớp nguồn thừa, không dùng tới".
+
+Mặc định script **loại bỏ** 4 lớp đó khỏi nguồn — như vậy là **xoá bài toán thay vì
+giải nó**, và balanced với unbalanced trở nên trùng nhau một cách tầm thường.
+
+Thiết lập đúng là **giữ** chúng lại: balanced OT buộc phải tiêu khối lượng của
+contempt/anxiety/helplessness/disappointment lên mẫu DFEW (sai, vì DFEW không có
+các lớp đó), còn UOT được phép bỏ không dùng.
+
+Đo trên dữ liệu tổng hợp, 5 fold:
+
+| `--source-label-space` | gap unbalanced − balanced | paired t |
+|---|---|---|
+| `shared` (bỏ 4 lớp) | **+0.00** — tầm thường | — |
+| `full` (giữ 4 lớp) | **+5.14 UAR**, dương cả 5/5 fold | **9.51** |
+
+| Chiều | cấu hình đúng |
+|---|---|
+| DFEW → MAFW | mặc định (`shared`) — lớp lạ nằm ở **đích** |
+| MAFW → DFEW | **`--source-label-space full`** — lớp thừa nằm ở **nguồn** |
+
 ## Tham số
 
 | | |
@@ -61,6 +84,7 @@ báo cáo cả hai và nói rõ gap gồm hai thành phần.
 | `--eps` | điều chuẩn entropy, tương đối so với thang của `C` |
 | `--tau` | nới biên. Lớn → balanced. Nhỏ → vứt nhiều khối lượng hơn |
 | `--metric` | `sqeuclidean` (mặc định) hoặc `cosine`; đều chuẩn hoá L2 trước |
+| `--source-label-space` | `full` giữ lớp chỉ có ở nguồn (partial adaptation) |
 | `--target-shared-only` | lọc đích còn 7 lớp. Đây là **điểm 0% của sweep**: không còn lớp lạ thì hai phương pháp phải trùng nhau, và điểm open-set không định nghĩa được |
 | `--sweep` | quét tỉ lệ lớp lạ 0→100%, sinh số cho hình chính |
 

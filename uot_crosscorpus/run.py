@@ -53,12 +53,21 @@ def source_prior(src_labels, tgt_labels, n_shared, mode):
     w = np.bincount(known, minlength=n_shared).astype(np.float64)
     w /= w.sum()
 
-    counts = np.bincount(src_labels, minlength=n_shared).astype(np.float64)
+    n_cls = int(src_labels.max()) + 1
+    counts = np.bincount(src_labels, minlength=n_cls).astype(np.float64)
+
+    # Reweight the shared classes to the target's shared-class proportions, but
+    # only within the share of mass they already hold in the source. Any extra
+    # source classes keep their own frequency, because how much mass they carry
+    # is the partial-adaptation variable under study, not a nuisance to remove.
+    shared_share = counts[:n_shared].sum() / counts.sum()
+
     a = np.zeros(n)
-    for c in range(n_shared):
+    for c in range(n_cls):
         mask = src_labels == c
-        if mask.any() and counts[c] > 0:
-            a[mask] = w[c] / counts[c]
+        if not mask.any():
+            continue
+        a[mask] = (shared_share * w[c] / counts[c]) if c < n_shared else (1.0 / counts.sum())
     total = a.sum()
     return a / total if total > 0 else np.full(n, 1.0 / n)
 
@@ -74,7 +83,10 @@ def label_propagate(pi, source_labels, n_classes):
 
 
 def evaluate(pi, src_labels, tgt_labels, n_shared, tag):
-    pred, _ = label_propagate(pi, src_labels, n_shared)
+    # Propagate over whatever label space the source actually has. If extra
+    # source classes were kept, a target sample may be assigned one of them --
+    # which is simply wrong, and is exactly the error balanced OT is forced into.
+    pred, _ = label_propagate(pi, src_labels, int(src_labels.max()) + 1)
     known = tgt_labels < n_shared
 
     uar, war, _ = M.uar_war(tgt_labels[known], pred[known], n_classes=n_shared)
@@ -160,6 +172,10 @@ def parse_args():
                    help='drop target samples of the 4 unmatched classes. This is the 0%% '
                         'point of the sweep: with nothing left unmatched, balanced and '
                         'unbalanced OT must agree, and open-set scoring is undefined.')
+    p.add_argument('--source-label-space', default='shared', choices=['shared', 'full'],
+                   help="'full' keeps source classes absent from the target, which is the "
+                        'partial-adaptation setting for MAFW->DFEW. Dropping them removes '
+                        'the problem instead of testing it.')
     p.add_argument('--source-prior', default='uniform', choices=['uniform', 'target-matched'],
                    help="'target-matched' removes the class-prior mismatch so the sweep "
                         'measures the open-set effect on its own')
@@ -189,12 +205,15 @@ def main():
     if X.shape[1] != Z.shape[1]:
         raise SystemExit('feature dims differ: {} vs {}'.format(X.shape[1], Z.shape[1]))
 
-    # The label space is the 7 shared classes; a MAFW source contributes only those.
     keep_src = src_labels < n_shared
-    if not keep_src.all():
+    if args.source_label_space == 'shared' and not keep_src.all():
         print('\n  source restricted to the {} shared classes: {} -> {} samples'.format(
             n_shared, len(src_labels), int(keep_src.sum())))
         X, src_labels = X[keep_src], src_labels[keep_src]
+    elif not keep_src.all():
+        print('\n  source keeps its {} extra classes ({} samples) -- partial adaptation:'
+              '\n    balanced OT must spend their mass on the target anyway, unbalanced may not'
+              .format(int(src_labels.max()) + 1 - n_shared, int((~keep_src).sum())))
 
     if args.target_shared_only:
         keep_tgt = tgt_labels < n_shared
