@@ -15,8 +15,8 @@ pip install -r requirements.txt
 
 `requirements.txt` ghim `torch==2.2.0 / torchaudio==2.2.0`. Nếu driver server không
 hợp, cài torch khớp CUDA của server trước rồi mới `pip install -r requirements.txt`
-cho phần còn lại. **Không cần cài thêm `POT`** — solver UOT trong `uot_crosscorpus/uot.py`
-viết bằng NumPy thuần.
+cho phần còn lại. **Không cần cài thêm `POT`** — solver UOT trong `models/uot.py`
+viết bằng PyTorch thuần.
 
 Kiểm tra:
 
@@ -86,8 +86,7 @@ mv <DATA_ROOT>/mafw <DATA_ROOT>/mfaw
 > khớp `mfaw` nhưng đường dẫn `.wav` suy ra vẫn sai, training chạy hết bình thường với
 > **audio là hằng số** — không cảnh báo gì, và mọi so sánh UOT thành vô nghĩa.
 > Sau chuẩn hoá, tensor 0 thành hằng số ~0.467 chứ không phải 0, nên dấu hiệu là
-> **`std == 0`**. Kiểm tra bằng `evaluate.py --zero-audio`: nếu bật cờ đó mà kết quả
-> không đổi thì audio vốn đã không đóng góp gì.
+> **`std == 0`**. `tools/smoke_test.py` kiểm tra đúng chỗ này (dòng `audio liveness`).
 
 ### Giải nén từ Kaggle
 
@@ -143,20 +142,23 @@ Yêu cầu để đi tiếp:
 - `missing .wav` nhỏ là chấp nhận được với MAFW (loader tự thay bằng `zeros(512,128)`),
   nhưng với DFEW thì **không có fallback** ⇒ phải bằng 0
 
-## 6. Kiểm chứng bằng checkpoint đã phát hành
-
-Phép kiểm tra mạnh nhất trước khi chạy bất cứ thí nghiệm nào: chạy model đã train của
-tác giả trên dữ liệu bạn vừa dựng.
+## 6. Smoke test (bắt buộc, ~1 phút)
 
 ```bash
-python evaluate.py --dataset MAFW --folds 1 2 3 4 5 --img-size 224 --workers 2 \
-    --checkpoint '<ckpt-root>/MAFW_224/fold{fold}_224.pth'
+CUDA_VISIBLE_DEVICES=0 python tools/smoke_test.py --dataset MAFW              # baseline
+CUDA_VISIBLE_DEVICES=0 python tools/smoke_test.py --dataset MAFW --use-uot    # có UOT
+CUDA_VISIBLE_DEVICES=0 python tools/smoke_test.py --dataset DFEW --use-uot
 ```
 
-So dòng `mean over 5 folds` với số công bố. Số trong paper là trung bình 5 fold, mà độ
-lệch giữa các fold ở đây tới ~12 điểm UAR — một fold đơn lẻ không so được.
+Phải thấy `SMOKE TEST PASSED`, và với `--use-uot` phải thấy:
 
-Muốn biết nhánh audio có đóng góp thật không, chạy lại với `--zero-audio` và so hiệu số.
+- các tensor `uot_fusion.*` có `|grad|max` khác 0 → gradient chảy đúng
+- `max|baseline - uot| = ...  OK` → gate zero-init đúng, model khởi đầu trùng baseline
+
+Dòng `peak GPU memory` cho biết batch-size nào vừa VRAM. Batch 8 × 16 frame = 128 ảnh
+qua ViT-B mỗi step, khá nặng. Nếu OOM: giảm `--batch-size` xuống 4 và giảm `--lr`
+tương ứng (8→4 thì `--lr 7e-5`), hoặc giảm `--img-size 160`
+(`n_image` tự tính `(img_size//16)**2` nên code vẫn chạy đúng).
 
 ## 7. Chạy training
 
@@ -200,15 +202,15 @@ watch -n 10 nvidia-smi
 > nên chỉ 1 file/fold). 5 fold × 2 config × 2 dataset ⇒ tính dư ~30–40 GB.
 > `df -h .` trước khi chạy.
 
-## 9. Trích đặc trưng cho phân tích UOT
+## 9. Đánh giá lại từ checkpoint
 
 ```bash
-./tools/extract_all.sh <checkpoint-root> dumps av
+python evaluate.py --fold 1 --checkpoint log/MAFW-.../checkpoint/model.pth \
+    --img-size 224 --dataset MAFW --use-uot
 ```
 
-Sinh 20 file `.npz` (4 tổ hợp checkpoint × tập test, 5 fold). Cần **cả hai** corpus đã
-dựng xong, vì mỗi checkpoint chạy trên cả hai tập test. Sau bước này mọi thứ chạy trên
-CPU — xem `uot_crosscorpus/README.md`.
+Cờ `--use-uot` **bắt buộc** phải khớp với lúc train, nếu không kiến trúc dựng ra khác
+và `load_state_dict` sẽ lỗi.
 
 ## 10. Checklist trước khi bấm chạy
 
@@ -216,7 +218,7 @@ CPU — xem `uot_crosscorpus/README.md`.
 - [ ] 2 file `.pth` pretrain đúng tên ở thư mục gốc
 - [ ] `tools/check_data.py` sạch trên cả train và test của fold định chạy
 - [ ] `annotation.bak/` đã backup
-- [ ] `evaluate.py --folds 1 2 3 4 5` cho trung bình gần số công bố
+- [ ] `tools/smoke_test.py --use-uot` in `SMOKE TEST PASSED` + gate check OK
 - [ ] `df -h .` còn ≥ 50 GB
 - [ ] đang ở trong `tmux`
 - [ ] `--exper-name` đặt tên phân biệt được baseline / UOT / giá trị τ
