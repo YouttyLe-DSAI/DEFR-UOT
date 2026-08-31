@@ -120,15 +120,24 @@ def main():
     logits = np.concatenate(logits)
     labels = np.concatenate(labels)
 
+    # The frozen classifier travels with the features: barycentric projection maps
+    # target samples into the source feature space, and they are then classified by
+    # this exact linear layer. Shipping it here keeps the analysis self-contained.
+    clf = model.our_classifier
+    clf_w = clf.weight.detach().float().cpu().numpy()
+    clf_b = clf.bias.detach().float().cpu().numpy()
+
     os.makedirs(args.out_dir, exist_ok=True)
     name = '{}_fold{}_{}.npz'.format(case_name(args.ckpt_dataset, args.test_dataset),
                                      args.fold, args.method)
     path = os.path.join(args.out_dir, name)
-    np.savez_compressed(path, feature=feats, logit=logits, label=labels)
+    np.savez_compressed(path, feature=feats, logit=logits, label=labels,
+                        clf_weight=clf_w, clf_bias=clf_b)
 
     acc = 100.0 * (logits.argmax(1) == labels).mean()
     print('\nwrote {}'.format(path))
     print('  feature {}  logit {}  label {}'.format(feats.shape, logits.shape, labels.shape))
+    print('  classifier {} + {}'.format(clf_w.shape, clf_b.shape))
     print('  classes seen: {}'.format(sorted(set(labels.tolist()))))
     print('  top-1 over the raw logits: {:.2f}%  (low is expected when the checkpoint'
           '\n  and the test corpus differ, or when a class is outside its output space)'.format(acc))

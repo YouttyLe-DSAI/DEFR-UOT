@@ -1,19 +1,22 @@
-"""Cross-corpus adaptation between DFEW and MAFW by (unbalanced) optimal transport.
+"""Post-hoc cross-corpus alignment for DFER, on frozen features.
 
-The label spaces are nested -- DFEW's 7 classes are the first 7 of MAFW's 11 --
-so transporting DFEW onto MAFW leaves four target classes with no source
-counterpart. Balanced OT must still move every unit of target mass somewhere,
-which forces those samples onto one of the 7 source classes. Unbalanced OT
-relaxes the marginals to a KL penalty and may leave them unmatched.
+Everything here works in the 7-class label space shared by DFEW and MAFW.
+MAFW is restricted to those 7 classes (MAFW-7); the four MAFW-only classes are
+dropped, and an MAFW checkpoint's 11 logits are cut to their first 7, which the
+matching class order makes valid. Both checkpoints are then compared under
+identical conditions.
 
-Both source and target features must come from the SAME checkpoint. Features
-from two different encoders do not share a metric, and the cost matrix is then
-meaningless -- the reason the audio-visual formulation of this idea failed.
+Four methods, none of which updates a parameter:
+
+  none              frozen classifier on the target features as they are
+  prior_correction  logit adjustment towards an EM-estimated target prior
+  balanced_ot       barycentric projection through a balanced plan, then classify
+  unbalanced_ot     the same through a KL-relaxed plan
 
   python -m uot_crosscorpus.run \
-      --source Results/baseline_B/dumps/dfew_dfew_fold1_av.npz \
-      --target Results/baseline_A/dumps/dfew_mafw11_fold1_av.npz \
-      --eps 0.05 --tau 1.0 --sweep
+      --source dumps/dfew_dfew_fold1_av.npz \
+      --target dumps/dfew_mafw11_fold1_av.npz \
+      --eps 0.05 --tau 1.0
 """
 
 import argparse
@@ -25,251 +28,158 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import data as D
+import methods as ME
 import metrics as M
 import uot as OT
 
+N_SHARED = ME.N_SHARED
 
-def source_prior(src_labels, tgt_labels, n_shared, mode):
-    """Weights for the source marginal `a`.
 
-    'uniform' gives every source sample equal mass, so each class can send only
-    as much as its own frequency -- which means balanced OT is penalised by any
-    class-prior mismatch, not just by unmatched classes. Since UOT relaxes both
-    at once, a sweep run this way cannot attribute its gap to the open-set
-    structure alone.
+def restrict_to_shared(Z, y, logits=None):
+    """Keep only the 7 classes both corpora share. This is what makes MAFW-7."""
+    keep = y < N_SHARED
+    return Z[keep], y[keep], (logits[keep] if logits is not None else None), keep
 
-    'target-matched' reweights each source class to the share that class holds
-    among the target's *shared-class* samples. That share does not change as the
-    sweep adds unmatched samples, so the prior stays fixed while only the
-    open-set fraction moves -- which is what H1 actually claims to test.
+
+def source_prior_weights(y_src, y_tgt, mode):
+    """Weights for the OT source marginal `a`.
+
+    'uniform' is the default and the setting the experiment is about: class-prior
+    shift is the phenomenon under study, so it must reach the solver intact.
+    Balanced OT then has to match both marginals exactly and pushes mass onto the
+    over-represented class, which is precisely the failure unbalanced OT avoids.
+
+    'target-matched' hand-corrects that mismatch before the solver sees it. It
+    answers a different question -- what transport buys once priors already agree
+    -- and removes most of the reason to prefer the unbalanced solver.
     """
-    n = len(src_labels)
+    n = len(y_src)
     if mode == 'uniform':
         return np.full(n, 1.0 / n)
 
-    known = tgt_labels[tgt_labels < n_shared]
-    if len(known) == 0:
-        return np.full(n, 1.0 / n)
-    w = np.bincount(known, minlength=n_shared).astype(np.float64)
-    w /= w.sum()
-
-    n_cls = int(src_labels.max()) + 1
-    counts = np.bincount(src_labels, minlength=n_cls).astype(np.float64)
-
-    # Reweight the shared classes to the target's shared-class proportions, but
-    # only within the share of mass they already hold in the source. Any extra
-    # source classes keep their own frequency, because how much mass they carry
-    # is the partial-adaptation variable under study, not a nuisance to remove.
-    shared_share = counts[:n_shared].sum() / counts.sum()
+    w = np.bincount(y_tgt, minlength=N_SHARED).astype(np.float64)
+    w /= max(w.sum(), 1e-12)
+    counts = np.bincount(y_src, minlength=N_SHARED).astype(np.float64)
 
     a = np.zeros(n)
-    for c in range(n_cls):
-        mask = src_labels == c
-        if not mask.any():
-            continue
-        a[mask] = (shared_share * w[c] / counts[c]) if c < n_shared else (1.0 / counts.sum())
+    for c in range(N_SHARED):
+        mask = y_src == c
+        if mask.any() and counts[c] > 0:
+            a[mask] = w[c] / counts[c]
     total = a.sum()
     return a / total if total > 0 else np.full(n, 1.0 / n)
 
 
-def label_propagate(pi, source_labels, n_classes):
-    """Target label = the source class that sent it the most mass."""
-    scores = np.zeros((n_classes, pi.shape[1]))
-    for c in range(n_classes):
-        mask = source_labels == c
-        if mask.any():
-            scores[c] = pi[mask].sum(axis=0)
-    return scores.argmax(axis=0), scores
+def run_all(Z_s, y_s, Z_t, y_t, tgt_logits, clf_w, clf_b, args):
+    """Returns {method: (uar, war, per_class_recall)}."""
+    base_logits = ME.classify(Z_t, clf_w, clf_b)
+    a = source_prior_weights(y_s, y_t, args.source_prior)
+    out = {}
 
+    def score(name, logits):
+        pred = logits.argmax(axis=1)
+        uar, war, rec = M.uar_war(y_t, pred, n_classes=N_SHARED)
+        out[name] = (uar, war, rec)
 
-def evaluate(pi, src_labels, tgt_labels, n_shared, tag):
-    # Propagate over whatever label space the source actually has. If extra
-    # source classes were kept, a target sample may be assigned one of them --
-    # which is simply wrong, and is exactly the error balanced OT is forced into.
-    pred, _ = label_propagate(pi, src_labels, int(src_labels.max()) + 1)
-    known = tgt_labels < n_shared
+    score('none', base_logits)
 
-    uar, war, _ = M.uar_war(tgt_labels[known], pred[known], n_classes=n_shared)
-    mass = pi.sum(axis=0)
+    src_prior = np.bincount(y_s, minlength=N_SHARED).astype(np.float64)
+    src_prior /= src_prior.sum()
+    adjusted, est_prior = ME.prior_correction(base_logits, src_prior, mode=args.prior_mode)
+    score('prior_correction', adjusted)
 
-    row = {'method': tag, 'uar': uar, 'war': war,
-           'total_mass': float(pi.sum()),
-           'auroc': float('nan'), 'fpr95': float('nan')}
+    for name, balanced in (('balanced_ot', True), ('unbalanced_ot', False)):
+        logits, _, mass, ok = ME.ot_align(
+            Z_s, Z_t, clf_w, clf_b, eps=args.eps, tau=args.tau,
+            n_iters=args.iters, balanced=balanced, a=a, metric=args.metric,
+            normalize=not args.no_normalize, fallback_logits=base_logits)
+        score(name, logits)
+        if not balanced:
+            out['_unmatched'] = int((~ok).sum())
 
-    if (~known).any():
-        # Low received mass should indicate a class the source never saw.
-        row['auroc'] = M.auroc(-mass, ~known)
-        row['fpr95'] = M.fpr_at_tpr(-mass, ~known)
-    return row, pred, mass
-
-
-def solve_both(C, eps, tau, n_iters, a=None):
-    return {
-        'balanced': OT.sinkhorn_log(C, a=a, eps=eps, tau=OT.BALANCED_TAU, n_iters=n_iters),
-        'unbalanced': OT.sinkhorn_log(C, a=a, eps=eps, tau=tau, n_iters=n_iters),
-    }
-
-
-def print_table(rows, title):
-    print('\n' + title)
-    print('  {:<12} {:>8} {:>8} {:>11} {:>8} {:>8}'.format(
-        'method', 'UAR', 'WAR', 'mass', 'AUROC', 'FPR@95'))
-    for r in rows:
-        print('  {:<12} {:>8.2f} {:>8.2f} {:>11.4f} {:>8.3f} {:>8.3f}'.format(
-            r['method'], r['uar'], r['war'], r['total_mass'], r['auroc'], r['fpr95']))
-
-
-def sweep(X, Z, tgt_labels, src_labels, n_shared, args, a=None):
-    """H1: the balanced/unbalanced gap should grow with the unmatched-class mass."""
-    rng = np.random.default_rng(args.seed)
-    known_idx = np.flatnonzero(tgt_labels < n_shared)
-    novel_idx = np.flatnonzero(tgt_labels >= n_shared)
-    if len(novel_idx) == 0:
-        print('\n[sweep] target has no unmatched classes -- nothing to sweep')
-        return []
-
-    print('\n[sweep] unmatched-class fraction 0 -> 100%  ({} known, {} novel target samples)'
-          .format(len(known_idx), len(novel_idx)))
-    print('  {:>8} {:>7} {:>10} {:>12} {:>9}'.format(
-        'fraction', 'n_novel', 'UAR bal', 'UAR unbal', 'gap'))
-
-    out = []
-    for frac in args.sweep_fractions:
-        take = int(round(frac * len(novel_idx)))
-        keep = np.concatenate([known_idx, rng.choice(novel_idx, take, replace=False)]) \
-            if take else known_idx
-        keep = np.sort(keep)
-
-        C = OT.cost_matrix(X, Z[keep], metric=args.metric, normalize=not args.no_normalize)
-        plans = solve_both(C, args.eps, args.tau, args.iters, a=a)
-        res = {}
-        for name, pi in plans.items():
-            r, _, _ = evaluate(pi, src_labels, tgt_labels[keep], n_shared, name)
-            res[name] = r
-        gap = res['unbalanced']['uar'] - res['balanced']['uar']
-        print('  {:>7.0f}% {:>7d} {:>10.2f} {:>12.2f} {:>+9.2f}'.format(
-            frac * 100, take, res['balanced']['uar'], res['unbalanced']['uar'], gap))
-        out.append((frac, take, res['balanced']['uar'], res['unbalanced']['uar'], gap))
+    out['_est_prior'] = est_prior
     return out
 
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--source', required=True, help='.npz of labelled source features')
-    p.add_argument('--target', required=True, help='.npz of target features (same checkpoint!)')
+    p.add_argument('--source', required=True)
+    p.add_argument('--target', required=True)
     p.add_argument('--feat-key', default=None)
     p.add_argument('--label-key', default=None)
-
-    p.add_argument('--eps', type=float, default=0.05, help='entropic regularisation')
-    p.add_argument('--tau', type=float, default=1.0, help='marginal relaxation for UOT')
+    p.add_argument('--eps', type=float, default=0.05)
+    p.add_argument('--tau', type=float, default=1.0)
     p.add_argument('--iters', type=int, default=200)
     p.add_argument('--metric', default='sqeuclidean', choices=['sqeuclidean', 'cosine'])
-    p.add_argument('--no-normalize', action='store_true',
-                   help='skip L2 normalisation before building the cost matrix')
-
-    p.add_argument('--target-shared-only', action='store_true',
-                   help='drop target samples of the 4 unmatched classes. This is the 0%% '
-                        'point of the sweep: with nothing left unmatched, balanced and '
-                        'unbalanced OT must agree, and open-set scoring is undefined.')
-    p.add_argument('--source-label-space', default='shared', choices=['shared', 'full'],
-                   help="'full' keeps source classes absent from the target, which is the "
-                        'partial-adaptation setting for MAFW->DFEW. Dropping them removes '
-                        'the problem instead of testing it.')
-    p.add_argument('--source-prior', default='uniform', choices=['uniform', 'target-matched'],
-                   help="'target-matched' removes the class-prior mismatch so the sweep "
-                        'measures the open-set effect on its own')
-    p.add_argument('--sweep', action='store_true', help='run the H1 fraction sweep')
-    p.add_argument('--sweep-fractions', type=float, nargs='+',
-                   default=[0.0, 0.25, 0.5, 0.75, 1.0])
-    p.add_argument('--seed', type=int, default=1)
-    p.add_argument('--out', default=None, help='write results as .npz')
+    p.add_argument('--no-normalize', action='store_true')
+    p.add_argument('--source-prior', default='uniform',
+                   choices=['uniform', 'target-matched'],
+                   help="keep 'uniform': prior shift is the phenomenon under study and "
+                        "must reach the solver. 'target-matched' corrects it beforehand "
+                        'and answers a different question.')
+    p.add_argument('--prior-mode', default='em', choices=['em', 'source', 'oracle'],
+                   help="'em' estimates the target prior without labels; 'oracle' uses "
+                        'the true one and is an upper bound, not a baseline')
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    n_shared = D.N_SHARED
 
     print('== dumps ==')
-    X, src_labels, src_logits, src_keys = D.load_dump(args.source, args.feat_key, args.label_key)
-    D.describe(args.source, X, src_labels, src_keys)
-    Z, tgt_labels, tgt_logits, tgt_keys = D.load_dump(args.target, args.feat_key, args.label_key)
-    D.describe(args.target, Z, tgt_labels, tgt_keys)
+    Z_s, y_s, _, ks = D.load_dump(args.source, args.feat_key, args.label_key)
+    D.describe(args.source, Z_s, y_s, ks)
+    Z_t, y_t, tgt_logits, kt = D.load_dump(args.target, args.feat_key, args.label_key)
+    D.describe(args.target, Z_t, y_t, kt)
 
     ck_s, ck_t = D.checkpoint_of(args.source), D.checkpoint_of(args.target)
     if ck_s and ck_t and ck_s != ck_t:
-        print('\n  !! source came from the {} checkpoint and target from {}. Their features'
-              '\n     do not share a metric space, so the cost matrix is meaningless.'
-              '\n     Use two dumps produced by the SAME checkpoint.'.format(ck_s, ck_t))
-    if X.shape[1] != Z.shape[1]:
-        raise SystemExit('feature dims differ: {} vs {}'.format(X.shape[1], Z.shape[1]))
+        print('\n  !! source is from the {} checkpoint and target from {}; their features'
+              '\n     share no metric space and the cost matrix is meaningless.'.format(ck_s, ck_t))
 
-    keep_src = src_labels < n_shared
-    if args.source_label_space == 'shared' and not keep_src.all():
-        print('\n  source restricted to the {} shared classes: {} -> {} samples'.format(
-            n_shared, len(src_labels), int(keep_src.sum())))
-        X, src_labels = X[keep_src], src_labels[keep_src]
-    elif not keep_src.all():
-        print('\n  source keeps its {} extra classes ({} samples) -- partial adaptation:'
-              '\n    balanced OT must spend their mass on the target anyway, unbalanced may not'
-              .format(int(src_labels.max()) + 1 - n_shared, int((~keep_src).sum())))
+    clf_w, clf_b = D.load_classifier(args.target)
+    print('\n  frozen classifier from the target dump: {} + {}'.format(
+        clf_w.shape, clf_b.shape))
 
-    if args.target_shared_only:
-        keep_tgt = tgt_labels < n_shared
-        print('  target restricted to shared classes: {} -> {} samples'.format(
-            len(tgt_labels), int(keep_tgt.sum())))
-        Z, tgt_labels = Z[keep_tgt], tgt_labels[keep_tgt]
-        if tgt_logits is not None:
-            tgt_logits = tgt_logits[keep_tgt]
+    n_s0, n_t0 = len(y_s), len(y_t)
+    Z_s, y_s, _, _ = restrict_to_shared(Z_s, y_s)
+    Z_t, y_t, tgt_logits, _ = restrict_to_shared(Z_t, y_t, tgt_logits)
+    print('  restricted to the {} shared classes: source {} -> {}, target {} -> {}'.format(
+        N_SHARED, n_s0, len(y_s), n_t0, len(y_t)))
 
-    n_novel = int((tgt_labels >= n_shared).sum())
-    print('\n== problem ==')
-    print('  source {} x {}   target {} x {}   novel target samples: {} ({:.1f}%)'.format(
-        X.shape[0], X.shape[1], Z.shape[0], Z.shape[1], n_novel,
-        100.0 * n_novel / max(len(tgt_labels), 1)))
-    print('  eps={}  tau={}  metric={}  iters={}'.format(
-        args.eps, args.tau, args.metric, args.iters))
+    print('\n== class prior (%) ==')
+    ps = 100.0 * np.bincount(y_s, minlength=N_SHARED) / len(y_s)
+    pt = 100.0 * np.bincount(y_t, minlength=N_SHARED) / len(y_t)
+    print('  {:<12} {:>8} {:>8} {:>8}'.format('class', 'source', 'target', 'ratio'))
+    for c in range(N_SHARED):
+        print('  {:<12} {:>8.1f} {:>8.1f} {:>7.2f}x'.format(
+            D.DFEW_CLASSES[c], ps[c], pt[c], pt[c] / max(ps[c], 1e-9)))
 
-    a = source_prior(src_labels, tgt_labels, n_shared, args.source_prior)
-    print('  source prior: {}'.format(args.source_prior))
-    if args.source_prior == 'uniform':
-        print('    note: balanced OT is then also penalised by class-prior mismatch, not')
-        print('    only by unmatched classes. Use --source-prior target-matched to isolate')
-        print('    the open-set effect that H1 is about.')
+    res = run_all(Z_s, y_s, Z_t, y_t, tgt_logits, clf_w, clf_b, args)
 
-    C = OT.cost_matrix(X, Z, metric=args.metric, normalize=not args.no_normalize)
-    print('  cost: min {:.4f}  mean {:.4f}  max {:.4f}'.format(C.min(), C.mean(), C.max()))
+    print('\n== results (7-class label space) ==')
+    print('  {:<18} {:>8} {:>8}'.format('method', 'UAR', 'WAR'))
+    for name in ('none', 'prior_correction', 'balanced_ot', 'unbalanced_ot'):
+        uar, war, _ = res[name]
+        print('  {:<18} {:>8.2f} {:>8.2f}'.format(name, uar, war))
 
-    rows = []
-    if tgt_logits is not None:
-        known = tgt_labels < n_shared
-        zs = tgt_logits[:, :n_shared].argmax(axis=1)
-        uar, war, _ = M.uar_war(tgt_labels[known], zs[known], n_classes=n_shared)
-        rows.append({'method': 'zero-shot', 'uar': uar, 'war': war, 'total_mass': float('nan'),
-                     'auroc': float('nan'), 'fpr95': float('nan')})
+    print('\n== per-class recall (%) ==')
+    print('  {:<12} {:>9} {:>9} {:>9} {:>9}'.format(
+        'class', 'none', 'prior', 'bal OT', 'UOT'))
+    for c in range(N_SHARED):
+        print('  {:<12} {:>9.2f} {:>9.2f} {:>9.2f} {:>9.2f}'.format(
+            D.DFEW_CLASSES[c], res['none'][2][c], res['prior_correction'][2][c],
+            res['balanced_ot'][2][c], res['unbalanced_ot'][2][c]))
 
-    plans = solve_both(C, args.eps, args.tau, args.iters, a=a)
-    saved = {}
-    for name in ('balanced', 'unbalanced'):
-        row, pred, mass = evaluate(plans[name], src_labels, tgt_labels, n_shared, name)
-        rows.append(row)
-        saved[name + '_pred'] = pred
-        saved[name + '_mass'] = mass
+    if '_unmatched' in res and res['_unmatched']:
+        print('\n  {} target samples received no transport mass; scored on their own'
+              '\n  unaligned logits so the test set stays whole.'.format(res['_unmatched']))
 
-    print_table(rows, '== results ==')
-
-    gap = rows[-1]['uar'] - rows[-2]['uar']
-    print('\n  unbalanced - balanced = {:+.2f} UAR'.format(gap))
-    if n_novel == 0:
-        print('  (no unmatched classes present, so the two are expected to coincide)')
-
-    sweep_rows = sweep(X, Z, tgt_labels, src_labels, n_shared, args, a=a) if args.sweep else []
-
-    if args.out:
-        np.savez(args.out, rows=np.array([str(r) for r in rows]),
-                 sweep=np.array(sweep_rows, dtype=np.float64), **saved)
-        print('\nwrote', args.out)
+    best_other = max(res[m][0] for m in ('none', 'prior_correction', 'balanced_ot'))
+    print('\n  UOT vs best of the other three: {:+.2f} UAR'.format(
+        res['unbalanced_ot'][0] - best_other))
+    print('  (the success criterion requires UOT to beat all three, prior correction included)')
 
 
 if __name__ == '__main__':

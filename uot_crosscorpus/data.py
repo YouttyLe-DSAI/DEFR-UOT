@@ -57,6 +57,18 @@ def load_dump(path, feat_key=None, label_key=None):
     return feats, labels, logits, (feat_key, label_key)
 
 
+def load_classifier(path):
+    """The frozen linear head saved alongside the features."""
+    npz = np.load(path, allow_pickle=False)
+    if 'clf_weight' not in npz.files:
+        raise KeyError(
+            '{} has no clf_weight. Re-dump with the current tools/extract_features.py, '
+            'which saves the frozen classifier so barycentric projection can be '
+            'classified without touching the model.'.format(path))
+    return np.asarray(npz['clf_weight'], dtype=np.float64), \
+        np.asarray(npz['clf_bias'], dtype=np.float64)
+
+
 def checkpoint_of(path):
     """Infer which checkpoint produced a dump, from the <ckpt>_<test> case name."""
     name = os.path.basename(path)

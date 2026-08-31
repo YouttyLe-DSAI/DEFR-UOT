@@ -1,13 +1,62 @@
-# UOT cho thích nghi cross-corpus DFEW ↔ MAFW
+# Post-hoc UOT cho cross-corpus DFER dưới lệch prior lớp
 
-Chạy trên các file `.npz` mà baseline đã dump sẵn. **CPU, không cần GPU, không cần POT.**
+Chạy trên đặc trưng đã trích sẵn. **CPU, không GPU, không train gì cả.**
 
 ```
 uot.py       solver OT log-domain (balanced = trường hợp riêng tau→∞)
-data.py      nạp dump, không gian nhãn DFEW(7) ⊂ MAFW(11)
-metrics.py   UAR / WAR / AUROC / FPR@TPR95
-run.py       pipeline chính
+data.py      nạp dump + trọng số classifier đóng băng
+methods.py   4 phương pháp so sánh
+metrics.py   UAR / WAR / per-class recall / AUROC
+run.py       một cặp
+batch.py     đủ 5 fold × 2 chiều
 ```
+
+## Không gian nhãn: 7 lớp (MAFW-7)
+
+Mọi thí nghiệm dùng **7 lớp chung** của hai corpus. MAFW bị lọc còn 7 lớp đó
+(MAFW-7, 4 lớp riêng bị bỏ), và checkpoint MAFW xuất 11 logit thì **chỉ lấy 7 logit
+đầu** — hợp lệ vì thứ tự lớp trùng nhau. Hai checkpoint nhờ đó được so cùng điều kiện.
+
+## Bốn phương pháp
+
+| | Làm gì | Train? |
+|---|---|---|
+| `none` | classifier đóng băng trên đặc trưng đích nguyên trạng | ✗ |
+| `prior_correction` | logit adjustment về prior đích ước lượng bằng EM (SLD) | ✗ |
+| `balanced_ot` | barycentric projection qua plan cân bằng → classifier | ✗ |
+| `unbalanced_ot` | như trên, qua plan nới biên bằng KL | ✗ |
+
+Barycentric projection: `z̃_j = (Σ_i P_ij z_i) / (Σ_i P_ij)` — đưa mẫu đích vào **không
+gian đặc trưng nguồn**, nơi classifier đóng băng còn hợp lệ. Rồi đưa **thẳng** vào
+`our_classifier`, không đi qua encoder hay temporal transformer nào nữa.
+
+Mẫu đích nhận khối lượng 0 (điều mà UOT được phép tạo ra) thì projection không xác
+định; chúng được chấm bằng chính logit chưa căn chỉnh, để tập test không bị thu nhỏ.
+
+## Tiêu chí thành công
+
+UOT phải **thắng cả ba** phương pháp còn lại. Không thắng `prior_correction` thì luận
+điểm "unbalanced" không có cơ sở. `batch.py` in thẳng `MEETS` / `FAILS`.
+
+## ⚠ Giữ `--source-prior uniform`
+
+Lệch prior lớp **chính là hiện tượng đang nghiên cứu**, nên nó phải tới được solver.
+Balanced OT khi đó buộc phải khớp cả hai biên và dồn khối lượng lên lớp bị
+over-represented — đúng thứ UOT tránh được.
+
+`--source-prior target-matched` tự tay sửa lệch đó **trước** khi solver nhìn thấy. Nó
+trả lời một câu hỏi khác, và xoá gần hết lý do dùng bản unbalanced. Chỉ dùng khi muốn
+tách riêng ảnh hưởng của transport khỏi ảnh hưởng của prior.
+
+## Ràng buộc bắt buộc
+
+Nguồn và đích phải cùng **một checkpoint**. Đặc trưng từ hai encoder khác nhau không
+cùng metric space, cost matrix thành vô nghĩa. Script cảnh báo nếu tiền tố khác nhau.
+
+| Chiều | source | target |
+|---|---|---|
+| DFEW → MAFW-7 | `dfew_dfew_*` | `dfew_mafw11_*` |
+| MAFW → DFEW | `mafw_mafw11_*` | `mafw_dfew_*` |
 
 ## Lấy dumps ở đâu
 
