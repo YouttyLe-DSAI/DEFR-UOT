@@ -12,6 +12,8 @@ near-scratch. This prints enough to tell the three kinds apart:
 """
 
 import argparse
+import os
+import re
 import sys
 
 import torch
@@ -31,10 +33,51 @@ def classify(sd):
     return 'unknown'
 
 
+def find_checkpoints(root='/kaggle/input', max_depth=10):
+    """Locate .pth files without walking into the frame folders.
+
+    A plain recursive glob over /kaggle/input would descend into ~9k clip
+    directories holding hundreds of thousands of images. Clip folders arrive in
+    bulk, so pruning any directory with many children is enough -- and note the
+    pruning must not key on numeric names, because a Kaggle model mount ends in
+    a numeric version directory (.../pytorch/default/1).
+    """
+    hits = []
+    for cur, dirs, files in os.walk(root):
+        if cur[len(root):].count(os.sep) > max_depth or len(dirs) > 20:
+            dirs[:] = []
+        else:
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+        hits.extend(os.path.join(cur, f) for f in files if f.endswith('.pth'))
+    return sorted(hits)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('paths', nargs='+')
+    ap.add_argument('paths', nargs='*')
+    ap.add_argument('--find', metavar='ROOT', nargs='?', const='/kaggle/input',
+                    help='locate .pth files under ROOT and inspect them all')
     args = ap.parse_args()
+
+    if args.find:
+        found = find_checkpoints(args.find)
+        print('found {} .pth under {}:'.format(len(found), args.find))
+        for f in found:
+            print('  ', f)
+        print()
+        # The per-fold trained models are large and all alike; one is enough.
+        seen_fold = False
+        picked = []
+        for f in found:
+            if re.search(r'fold\d+_\d+\.pth$', f):
+                if seen_fold:
+                    continue
+                seen_fold = True
+            picked.append(f)
+        args.paths = picked
+
+    if not args.paths:
+        ap.error('give one or more paths, or use --find')
 
     for path in args.paths:
         print('=' * 70)
