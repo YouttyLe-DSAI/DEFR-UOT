@@ -215,10 +215,41 @@ Ma trận đầy đủ = 2 dataset × 2 config (baseline / UOT) × 5 fold × 25 
 Đo thời gian thật trước khi cam kết: chạy fold 1 và xem dòng `An epoch time` trong
 `log/.../log.txt` sau epoch đầu, rồi nhân 25.
 
-> **Cách tiết kiệm ~50% compute nếu cần:** vì gate zero-init làm model lúc đầu
-> trùng baseline, có thể warm-start UOT run từ checkpoint baseline
-> (`load_state_dict(..., strict=False)`) rồi chỉ train thêm ~8–10 epoch. `main.py`
-> hiện **chưa có** cờ `--resume`, cần thêm ~10 dòng. Nói mình nếu muốn làm.
+### Warm-start bằng `--resume` (đã có)
+
+Vì gate zero-init làm model lúc đầu trùng khít baseline, có thể cho **cả hai nhánh**
+xuất phát từ một checkpoint đã train (vd bản phát hành của tác giả) rồi chỉ fine-tune
+thêm vài epoch. Vẫn là so sánh có kiểm soát — miễn hai nhánh dùng **cùng** checkpoint
+nguồn và **cùng** số epoch:
+
+```bash
+R="/kaggle/input/.../checkpoint/MAFW_224/fold{fold}_224.pth"
+python main.py --dataset MAFW --folds 1 --epochs 5 --resume "$R" --exper-name WARM_BASE
+python main.py --dataset MAFW --folds 1 --epochs 5 --resume "$R" --use-uot --exper-name WARM_UOT
+```
+
+`{fold}` được thay theo từng fold. Nạp bằng `strict=False` là có chủ đích: nhánh
+`--use-uot` có thêm các key `uot_fusion.*` mà checkpoint nguồn không thể có, và chúng
+**phải giữ nguyên giá trị zero-init** để model vẫn khởi đầu bằng baseline.
+
+Đã kiểm chứng: bật UOT chỉ thêm đúng các key `uot_fusion.*` (không thêm/thiếu key nào
+khác), sau khi resume thì `missing` chỉ gồm `uot_fusion.*`, `unexpected` = 0, và gate
+vẫn bằng 0.
+
+Log sẽ in ra để bạn tự xác nhận:
+
+```
+Resumed from .../fold1_224.pth
+  missing (uot_fusion, expected): 240
+  missing (OTHER -- should be 0): 0 []
+  unexpected (should be 0)      : 0 []
+```
+
+**Dòng `missing (OTHER)` phải bằng 0.** Khác 0 nghĩa là checkpoint không khớp kiến trúc
+và phần lớn model đang train từ đầu.
+
+> ⚠ Không được dùng **số công bố của tác giả** làm baseline thay cho nhánh A. Data của
+> bạn đã preprocess lại, nên chênh lệch sẽ trộn lẫn giữa "do UOT" và "do khác data".
 
 ## 5. Thứ tự chạy
 

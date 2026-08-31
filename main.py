@@ -61,6 +61,10 @@ def parse_args():
     parser.add_argument('--uot-detach', action='store_true',
                         help='treat the transport plan as fixed routing weights (no backprop through the solver)')
 
+    parser.add_argument('--resume', type=str, default=None,
+                        help="warm-start from a trained checkpoint, e.g. the authors' "
+                             "release. May contain {fold}, expanded per fold. Weights only "
+                             "-- the optimizer and epoch counter start fresh.")
     parser.add_argument('--folds', nargs='+', type=int, default=None,
                         help='1-based folds to run, e.g. --folds 1. Default: all 5. '
                              'Needed when the session has a wall-clock limit (Kaggle).')
@@ -156,6 +160,24 @@ def main(set, args):
 
     model_parameters = model.parameters()
     model = torch.nn.DataParallel(model).cuda()
+
+    if args.resume:
+        # Both arms of a comparison must warm-start from the same weights for the
+        # result to mean anything. strict=False on purpose: a --use-uot run has
+        # uot_fusion.* keys the source checkpoint cannot have, and those must stay
+        # at their zero-init values so the model still starts equal to the baseline.
+        resume_path = args.resume.format(fold=data_set)
+        state = torch.load(resume_path, map_location='cpu', weights_only=False)
+        state = state.get('state_dict', state) if isinstance(state, dict) else state
+        msg = model.load_state_dict(state, strict=False)
+        unexpected = list(msg.unexpected_keys)
+        non_uot_missing = [k for k in msg.missing_keys if 'uot_fusion' not in k]
+        print('Resumed from {}'.format(resume_path))
+        print('  missing (uot_fusion, expected): {}'.format(len(msg.missing_keys) - len(non_uot_missing)))
+        print('  missing (OTHER -- should be 0): {} {}'.format(len(non_uot_missing), non_uot_missing[:5]))
+        print('  unexpected (should be 0)      : {} {}'.format(len(unexpected), unexpected[:5]))
+        with open(log_txt_path, 'a') as f:
+            f.write('resumed_from=' + resume_path + '\n')
 
     # print params   
     print('************************')
