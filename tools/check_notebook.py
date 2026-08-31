@@ -47,7 +47,7 @@ ns = {"_sh": lambda c: cmds.append(c), "_cd": lambda c: cmds.append("cd " + c)}
 for i, c in enumerate(nb["cells"]):
     if c["cell_type"] != "code":
         continue
-    src = to_python("\n".join(c["source"])).replace("/kaggle", ROOT)
+    src = to_python("\n".join(c["source"])).replace("/kaggle/", ROOT + "/")
     if SETUP_OVERRIDE and "SETUP = " in src:
         src = re.sub(r'SETUP\s*=\s*"[a-z0-9]+"', 'SETUP = "%s"' % SETUP_OVERRIDE, src, count=1)
     try:

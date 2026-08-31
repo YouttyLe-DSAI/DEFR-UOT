@@ -187,16 +187,85 @@ python -m uot_crosscorpus.batch --dumps-root dumps --out uot_results.csv
 In ra ma trận thí nghiệm: 4 phương pháp × 2 chiều × 5 fold, kèm per-class recall và
 `paired t` trên các fold. Chi tiết tham số: `uot_crosscorpus/README.md`.
 
-## 9. (Tuỳ chọn) Train UOT trong model
+## 9. Train UOT từ đầu — A/B trong 7 lớp chung
 
-Hướng khác, cần GPU thật sự — xem `UOT_INTEGRATION.md`.
+Đây là thí nghiệm chính, và là lý do cần server: 25 epoch × 2 nhánh ≈ **33 giờ**, không
+vừa giới hạn 12 giờ của Kaggle.
+
+### 9.1. Sinh split MAFW-7
 
 ```bash
-tmux new -s uot
-./train_MAFW_uot.sh          # hoặc bản warm-start với --resume
+python tools/make_mafw7.py --split both
 ```
 
----
+Bỏ 4 lớp chỉ MAFW có → **6.059 clip train / 1.517 clip test** mỗi fold.
+
+### 9.2. Hai nhánh, khác nhau đúng một cờ
+
+```bash
+COMMON="--dataset MAFW --folds 1 --epochs 25 --batch-size 8 --workers 8 \
+        --lr 1e-4 --weight-decay 1e-2 --print-freq 20 --temporal-layers 1 --img-size 224 \
+        --num-classes 7 \
+        --train-annotation ./annotation/MAFW_set_{fold}_train_faces7.txt \
+        --test-annotation  ./annotation/MAFW_set_{fold}_test_faces7.txt"
+
+# A — pipeline gốc
+python main.py $COMMON --exper-name AB_BASE_mafw7_scratch 2>&1 | tee base.log
+
+# B — thêm UOT
+python main.py $COMMON --use-uot --uot-eps 0.05 --uot-tau 1.0 --uot-iters 10 \
+    --exper-name AB_UOT_mafw7_scratch 2>&1 | tee uot.log
+```
+
+**Không có `--resume`** — adapter và classifier khởi tạo ngẫu nhiên, `lr 1e-4` theo paper.
+Hai encoder vẫn đóng băng; đó là thiết kế của MMA-DFER, không liên quan warm-start.
+
+Chiều cross-corpus: đổi `--test-annotation` sang `./annotation/DFEW_set_{fold}_test.txt`.
+Train DFEW: `--dataset DFEW` và bỏ `--train-annotation` (DFEW vốn đã 7 lớp).
+
+### 9.3. Đọc kết quả
+
+```bash
+python tools/compare_runs.py --log-root log \
+    --base AB_BASE_mafw7_scratch --uot AB_UOT_mafw7_scratch
+```
+
+In UAR/WAR hai nhánh, hiệu số, và **bảng recall từng lớp** — cần cả bảng đó, vì các lớp
+có thể lệch mạnh mà triệt tiêu nhau trong UAR.
+
+### 9.4. Kiểm tra khi vừa khởi động
+
+| Dòng | Phải thấy |
+|---|---|
+| `Loss` ở step 0 | **~1.95** (`= ln 7`) — đúng cho train từ đầu |
+| nhánh B so với nhánh A | **cùng loss step 0** (gate UOT khởi tạo 0) |
+
+Trước đó chạy smoke test một lần cho chắc:
+
+```bash
+python tools/smoke_test.py --dataset MAFW --num-classes 7 \
+    --train-annotation ./annotation/MAFW_set_{fold}_train_faces7.txt --use-uot --batch-size 2
+```
+
+### 9.5. Ngân sách
+
+| Tốc độ train | 1 epoch | 25 epoch / nhánh | Cả hai nhánh |
+|---|---|---|---|
+| 2 clip/s | 57 phút | 23,6 giờ | **47 giờ** |
+| 3 clip/s | 40 phút | 16,6 giờ | 33 giờ |
+| 5 clip/s | 26 phút | 11,0 giờ | 22 giờ |
+
+Đo `An epoch time` trong `log.txt` sau epoch đầu rồi nhân lên — bảng trên chỉ là ước lượng.
+
+Nhiều GPU thì chạy song song hai nhánh:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python main.py $COMMON --exper-name AB_BASE_mafw7_scratch &
+CUDA_VISIBLE_DEVICES=1 python main.py $COMMON --use-uot ... --exper-name AB_UOT_mafw7_scratch &
+wait
+```
+
+Hai nhánh độc lập hoàn toàn nên song song không ảnh hưởng tính hợp lệ.
 
 ## Chạy nền
 
