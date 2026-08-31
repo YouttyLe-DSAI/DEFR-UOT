@@ -26,29 +26,81 @@ python -c "import torch, timm; print(torch.__version__, timm.__version__, torch.
 `timm` phải là **0.9.16**. Bản 1.x đổi API của `VisionTransformer` mà `models/models_vit.py`
 kế thừa.
 
-## 2. Tải dữ liệu từ Kaggle (~1 giờ, tuỳ mạng)
+## 2. Lấy dữ liệu và checkpoint (~1 giờ)
 
-Lấy API token: kaggle.com → Account → *Create New API Token* → được `kaggle.json`.
+### 2.1. Credential
+
+Máy hiện tại **đã đăng nhập sẵn** (tài khoản `tunalmt`). Copy nguyên thư mục sang server,
+không cần tạo token mới:
 
 ```bash
-mkdir -p ~/.kaggle && mv kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json
-
-export DATA=/data/dfer            # đổi cho khớp server
-mkdir -p $DATA && cd $DATA
-
-# đổi <user>/<slug> theo đúng dataset của nhóm
-kaggle datasets download -d <user>/mafw-faces-native-part1 --unzip -p .
-kaggle datasets download -d <user>/mafw-faces-native-part2 --unzip -p .
-kaggle datasets download -d <user>/mafw-native-rate-audio  --unzip -p .
-kaggle datasets download -d <user>/dfew-preprocessed       --unzip -p .
-
-# checkpoint (Kaggle Model, không phải Dataset)
-kaggle models instances versions download tunalmt/modelmma/pyTorch/default/1 -p .
-tar -xzf *.tar.gz 2>/dev/null || unzip -o '*.zip'
-cd -
+scp -r ~/.kaggle/ <user>@<server>:~/
+ssh <user>@<server> 'chmod 600 ~/.kaggle/*'
 ```
 
-Không nhớ slug: `kaggle datasets list -m` liệt kê dataset của chính bạn.
+> `~/.kaggle/` chứa **hai** file: `access_token` (credential đang được CLI dùng) và
+> `kaggle.json`. Lưu ý `kaggle.json` ở máy này **không phải JSON** — nó là một dòng
+> `export KAGGLE_API_TOKEN=KGAT_...`, tức token định dạng mới. Copy cả thư mục thì
+> chắc chắn đúng dù CLI dùng file nào.
+
+Kiểm tra trên server:
+
+```bash
+kaggle datasets list -m | head -3
+```
+
+### 2.2. Checkpoint — tải trực tiếp được
+
+Model thuộc tài khoản của bạn, đã xác nhận tồn tại (`746417  tunalmt/modelmma  modelMMA`):
+
+```bash
+export DATA=/data/dfer && mkdir -p $DATA && cd $DATA
+kaggle models instances versions download tunalmt/modelmma/pyTorch/default/1 -p .
+tar -xzf *.tar.gz 2>/dev/null || unzip -o '*.zip'
+```
+
+### 2.3. Dataset — cần ref chính xác
+
+⚠ Bốn dataset MAFW/DFEW **không thuộc tài khoản `tunalmt`**: `kaggle datasets list -m`
+không liệt kê chúng, và tìm công khai cũng không ra (chúng là private của một thành viên
+khác trong nhóm, được share cho bạn).
+
+API cần đúng `<chủ-sở-hữu>/<slug>`, mà cái đó **không đọc được từ `/kaggle/input`**. Lấy
+từ URL trang dataset trên Kaggle:
+
+```
+kaggle.com/datasets/<chu-so-huu>/<slug>
+                    └───────────┬───────────┘
+                        chính là ref cần dùng
+```
+
+Rồi:
+
+```bash
+kaggle datasets download -d <chu-so-huu>/<slug> --unzip -p .
+```
+
+Nếu tải báo `403`, dataset chưa được share với tài khoản của bạn — nhờ chủ sở hữu thêm
+bạn vào phần *Collaborators*.
+
+### 2.4. Đường tắt: khỏi tải dữ liệu thô
+
+Phần phân tích UOT **chỉ cần 20 file `.npz`**, không cần ảnh gốc. Nếu chỉ định chạy
+`uot_crosscorpus`, chạy bước trích đặc trưng **trên Kaggle** (nơi dữ liệu đã mount sẵn)
+rồi mang kết quả về:
+
+| | Dung lượng |
+|---|---|
+| Ảnh + audio thô của hai corpus | vài chục GB |
+| 20 file `.npz` | **~100 MB** |
+
+Trên Kaggle, chạy `kaggle/UOT_CROSSCORPUS.ipynb` Cell 2b → Save Version. Rồi trên server:
+
+```bash
+kaggle kernels output <chu-so-huu>/<ten-kernel> -p dumps/
+```
+
+Chỉ cần tải dữ liệu thô khi bạn định **train** (bước 9) hoặc chạy `evaluate.py` (bước 6).
 
 ## 3. Dựng cấu trúc thư mục (2 phút)
 
@@ -96,7 +148,7 @@ ls -la *.pth
 
 Tên bị hardcode trong `models/Generate_Model.py`, phải đúng chính xác.
 
-## 6. Kiểm chứng dữ liệu (~40 phút GPU)
+## 6. Kiểm chứng dữ liệu (~40 phút GPU) — cần dữ liệu thô
 
 Chạy model **đã train của tác giả** trên dữ liệu bạn vừa dựng. Mọi thứ khác giống hệt
 tác giả, nên chênh lệch chỉ có thể đến từ dữ liệu.
@@ -111,7 +163,7 @@ các fold tới ~12 điểm UAR nên **một fold đơn lẻ không so được*
 
 Nếu thấp bất thường, `--zero-audio` cho biết nhánh audio có đóng góp thật không.
 
-## 7. Trích đặc trưng (~2 giờ GPU)
+## 7. Trích đặc trưng (~2 giờ GPU) — cần dữ liệu thô, hoặc dùng đường tắt §2.4
 
 Bước GPU duy nhất mà phần UOT cần. Sinh 20 file `.npz`:
 
@@ -163,4 +215,4 @@ conda activate mmadfer
 - [ ] 2 file `.pth` encoder đúng tên ở thư mục gốc
 - [ ] `evaluate.py --folds 1 2 3 4 5` cho trung bình gần số công bố
 - [ ] `dumps/` có đủ 20 file `.npz`
-- [ ] `df -h .` còn ≥ 200 GB (frame của hai corpus)
+- [ ] `df -h .` còn ≥ 200 GB (chỉ cần nếu tải dữ liệu thô; đường tắt §2.4 thì ~100 MB)
