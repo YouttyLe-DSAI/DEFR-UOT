@@ -7,9 +7,15 @@ failures that otherwise show up three hours into epoch 0.
 """
 
 import argparse
-import types
+import os
+import sys
 
 import torch
+
+# `python tools/smoke_test.py` puts tools/ on sys.path, not the repo root, so the
+# repo's own packages are invisible without this. Every other script in tools/
+# is self-contained; this one is not.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dataloader.video_dataloader import train_data_loader
 from models.Generate_Model import GenerateModel
