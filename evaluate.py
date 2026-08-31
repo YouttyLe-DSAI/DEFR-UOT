@@ -42,6 +42,10 @@ def parse_args():
     parser.add_argument('--workers', type=int, default=8)
 
     parser.add_argument('--fold', type=int, default=1)
+    parser.add_argument('--folds', nargs='+', type=int, default=None,
+                        help='evaluate several folds and average, e.g. --folds 1 2 3 4 5. '
+                             'The published figures are 5-fold means, so a single fold is '
+                             'not directly comparable to them.')
 
     # --- Unbalanced Optimal Transport fusion ---
     # These MUST match the flags used at training time, otherwise the
@@ -290,9 +294,23 @@ if __name__ == '__main__':
     for k, v in vars(args).items():
         print(k,'=',v)
     print('************************')
-    uar, war = main(args.fold, args)
-       
-    print('********* Final Results *********')   
-    print("UAR: %0.2f" % (uar))
-    print("WAR: %0.2f" % (war))
+    folds = args.folds if args.folds else [args.fold]
+    template = args.checkpoint
+    results = []
+
+    for fold in folds:
+        # {fold} lets one invocation walk the per-fold checkpoints of a release.
+        args.checkpoint = template.format(fold=fold) if '{fold}' in template else template
+        uar, war = main(fold, args)
+        results.append((fold, uar, war))
+
+    print('********* Final Results *********')
+    for fold, uar, war in results:
+        print("fold %d   UAR: %0.2f   WAR: %0.2f" % (fold, uar, war))
+    if len(results) > 1:
+        print('---')
+        print("mean over %d folds   UAR: %0.2f   WAR: %0.2f" % (
+            len(results),
+            sum(r[1] for r in results) / len(results),
+            sum(r[2] for r in results) / len(results)))
     print('*********************************')
