@@ -81,6 +81,13 @@ mv <DATA_ROOT>/mafw <DATA_ROOT>/mfaw
 > để không bao giờ crash vì `fbank` chưa gán. Cách đổi tên thư mục an toàn hơn vì
 > không đụng vào code baseline.
 
+> ⚠ **Khớp được branch chưa đủ.** Nhánh MAFW có sẵn fallback
+> `if not os.path.exists(wav): fbank = torch.zeros(512,128)`. Nghĩa là nếu tên thư mục
+> khớp `mfaw` nhưng đường dẫn `.wav` suy ra vẫn sai, training chạy hết bình thường với
+> **audio là hằng số** — không cảnh báo gì, và mọi so sánh UOT thành vô nghĩa.
+> Sau chuẩn hoá, tensor 0 thành hằng số ~0.467 chứ không phải 0, nên dấu hiệu là
+> **`std == 0`**. `tools/smoke_test.py` kiểm tra đúng chỗ này (dòng `audio liveness`).
+
 ### Giải nén từ Kaggle
 
 ```bash

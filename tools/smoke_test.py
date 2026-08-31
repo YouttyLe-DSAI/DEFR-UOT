@@ -55,6 +55,21 @@ def main():
     images, target, audio = next(iter(loader))
     print('images {}  audio {}  target {}'.format(tuple(images.shape), tuple(audio.shape), tuple(target.shape)))
 
+    # Dead-audio check. When the .wav is missing the MAFW branch substitutes
+    # torch.zeros(512,128), which the normalisation then turns into a CONSTANT
+    # (~0.467), not into zeros -- so the giveaway is zero variance, and nothing
+    # else in the pipeline complains. Training would run to completion with the
+    # audio modality switched off, making any UOT comparison meaningless.
+    stds = audio.flatten(1).std(dim=1)
+    n_dead = int((stds == 0).sum())
+    print('audio liveness : per-sample std {} -> {}/{} dead'.format(
+        [round(float(x), 4) for x in stds], n_dead, len(stds)))
+    if n_dead == len(stds):
+        print('  !! FAIL: every sample has constant audio. The .wav files are not being\n'
+              '     found -- check the path logic with tools/check_data.py. Do NOT train.')
+    elif n_dead:
+        print('  !! {} sample(s) with constant audio; fine if rare, alarming if common.'.format(n_dead))
+
     images, target, audio = images.cuda(), target.cuda(), audio.cuda()
 
     print('== forward ==')

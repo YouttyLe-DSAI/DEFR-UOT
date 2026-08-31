@@ -66,8 +66,13 @@ def _wav_score(d):
         return 0
 
 
-def discover(root='/kaggle/input', dataset=None, max_depth=4):
-    """Find frames roots and audio roots by content, so Kaggle slugs need not be guessed."""
+def discover(root='/kaggle/input', dataset=None, max_depth=6):
+    """Find frames roots and audio roots by content, so Kaggle slugs need not be guessed.
+
+    Depth needs headroom: a MAFW frames root sits four levels down at
+    <slug>/<shard>/mfaw/clips_faces/, and the walk prunes as soon as it
+    recognises a root, so a generous cap costs nothing.
+    """
     frames, audio = [], []
     if not os.path.isdir(root):
         return frames, audio

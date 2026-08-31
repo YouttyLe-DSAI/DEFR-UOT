@@ -5,41 +5,47 @@ cùng (lý do ở §5). Xong thì chuyển sang server theo `SETUP.md`.
 
 ---
 
-## 1. Ba vấn đề với bộ dataset đang attach
+## 1. Vấn đề với bộ dataset đang attach
 
-Đối chiếu cấu trúc bạn đang có với logic của `dataloader/video_dataloader.py`:
+Cấu trúc thật (sau khi mở rộng cây trong sidebar):
 
-```python
-if   "clip_224x224" in frame_path:  wav = dir.replace('clip_224x224','raw_wav') + '/' + str(int(id)) + '.wav'
-elif "mfaw"         in frame_path:  wav = dir.replace('clips_faces','clips_wav') + '/' + id + '.wav'
-# KHÔNG có else  ->  biến `fbank` chưa gán  ->  UnboundLocalError
+```
+mafw-faces-native-part1/mafw_faces_native_shard0/mfaw/clips_faces/<id>/*.jpg
+mafw-faces-native-part2/mafw_faces_native_shard1/mfaw/clips_faces/<id>/*.jpg
+<audio-slug>/mfaw/clips_wav/<id>.wav
+dfew-preprocessed.../dfew_frames_part1..4/clip_224x224/<id>/<id>_<n>.jpg
+dfew-preprocessed.../dfew_audio_native/raw_wav/<int>.wav
 ```
 
-Mình đã chạy thử logic này trên đúng đường dẫn Kaggle của bạn:
+**Tin tốt:** đường dẫn đã chứa sẵn `mfaw` / `clips_faces` / `clip_224x224` → dataloader
+**khớp đúng branch**. Phần đặt tên bạn làm là chuẩn.
 
-| Đường dẫn thực tế | Kết quả |
-|---|---|
-| `/kaggle/input/mafw-faces-native-part1/mafw_faces_native_shard0/03747/00001.png` | ❌ **NO MATCH → crash** |
-| `/kaggle/input/dfew-preprocessed-for-mma-dfer/dfew_frames_part1/02522/00001.jpg` | ❌ **NO MATCH → crash** |
+**Tin xấu:** loader suy ra đường dẫn `.wav` **từ đường dẫn frame bằng phép thay chuỗi**,
+mà frames và audio nằm ở **mount khác nhau**:
 
-**Vấn đề 1 — sai chuỗi nhận diện.** Thư mục của bạn là `mafw_faces_native_shard0`
-(chứa `mafw`), nhưng code gốc viết sai chính tả và tìm `mfaw`. `mafw` ≠ `mfaw`.
-Tương tự `dfew_frames_part1` không chứa `clip_224x224`.
+| | loader đi tìm wav ở | wav thực sự nằm ở |
+|---|---|---|
+| MAFW | `.../mafw_faces_native_shard0/mfaw/clips_wav/03747.wav` | `/kaggle/input/<audio-slug>/mfaw/clips_wav/03747.wav` |
+| DFEW | `.../dfew_frames_part1/raw_wav/2522.wav` | `.../dfew_audio_native/raw_wav/2522.wav` |
 
-**Vấn đề 2 — thiếu tên thư mục để `.replace()` hoạt động.** Kể cả khi khớp branch,
-`.replace('clips_faces','clips_wav')` không làm gì vì đường dẫn không có `clips_faces`.
+Không trùng. Và **hai dataset hỏng theo hai kiểu khác nhau**:
 
-**Vấn đề 3 — frames và audio nằm ở các mount khác nhau (nghiêm trọng nhất).**
-Loader suy ra đường dẫn `.wav` **từ đường dẫn frame bằng phép thay chuỗi**. Nhưng
-frames ở `/kaggle/input/mafw-faces-native-part1/...` và `/…-part2/…`, còn audio ở
-`/kaggle/input/mafw-native-rate-audio.../mfaw/clips_wav/`. Ba prefix khác nhau —
-**không phép thay chuỗi nào bắc cầu được**. DFEW cũng vậy: 4 thư mục frames + 1 audio.
+- **DFEW — crash.** Nhánh DFEW không có fallback, `torchaudio.load` trên file không tồn
+  tại sẽ ném lỗi. Khó chịu nhưng ít nhất bạn biết ngay.
+- **MAFW — hỏng im lặng, nguy hiểm hơn nhiều.** Nhánh MAFW có
+  `if not os.path.exists(wav): fbank = torch.zeros(512,128)`. Training chạy hết 25 epoch,
+  loss giảm, accuracy có số — **nhưng modality audio đã chết hoàn toàn**, và toàn bộ so
+  sánh UOT trở nên vô nghĩa. Không có một dòng cảnh báo nào.
 
-> ⚠️ **Chế độ hỏng âm thầm, nguy hiểm hơn crash.** Nhánh MAFW có fallback:
-> nếu không tìm thấy `.wav` thì gán `fbank = torch.zeros(512,128)`. Nghĩa là nếu bạn
-> chỉ sửa cho khớp chuỗi `mfaw` mà đường dẫn wav vẫn sai, **training sẽ chạy bình
-> thường với audio toàn số 0** — modality audio chết hoàn toàn, và toàn bộ thí nghiệm
-> UOT trở nên vô nghĩa mà không có lỗi nào báo. Script ở §3 kiểm tra đúng chỗ này.
+> Lưu ý khi tự kiểm tra: sau chuẩn hoá `(fbank + 4.2677) / 9.1380`, tensor toàn 0 trở
+> thành **hằng số ~0.467**, không phải 0. Nên dấu hiệu nhận biết audio chết là
+> **`std == 0`**, không phải "toàn số 0". `tools/smoke_test.py` kiểm tra đúng chỗ này.
+
+Vấn đề thứ ba: frames bị chia thành nhiều mount (MAFW 2 shard, DFEW 4 part) nhưng
+annotation chỉ ghi được một gốc đường dẫn.
+
+Cả ba vấn đề được giải quyết bằng cây symlink ở §3 Cell 4, **không sửa dòng nào của
+code baseline**.
 
 ## 2. Còn thiếu: checkpoint pretrain
 
