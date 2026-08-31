@@ -28,6 +28,10 @@ def parse_args():
     p.add_argument('--img-size', type=int, default=224)
     p.add_argument('--temporal-layers', type=int, default=1)
     p.add_argument('--batch-size', type=int, default=2)
+    p.add_argument('--num-classes', type=int, default=None,
+                   help='override the class count; pass 7 for the shared label space')
+    p.add_argument('--train-annotation', type=str, default=None,
+                   help='use a specific split, e.g. the MAFW-7 one. {fold} is expanded.')
     p.add_argument('--use-uot', action='store_true')
     p.add_argument('--uot-eps', type=float, default=0.05)
     p.add_argument('--uot-tau', type=float, default=1.0)
@@ -38,9 +42,11 @@ def parse_args():
 
 def main():
     args = parse_args()
-    args.number_class = 11 if args.dataset == 'MAFW' else 7
+    args.number_class = args.num_classes or (11 if args.dataset == 'MAFW' else 7)
 
-    if args.dataset == 'MAFW':
+    if args.train_annotation:
+        ann = args.train_annotation.format(fold=args.fold)
+    elif args.dataset == 'MAFW':
         ann = './annotation/MAFW_set_{}_train_faces.txt'.format(args.fold)
     else:
         ann = './annotation/DFEW_set_{}_train.txt'.format(args.fold)
