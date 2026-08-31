@@ -9,6 +9,24 @@ metrics.py   UAR / WAR / AUROC / FPR@TPR95
 run.py       pipeline chính
 ```
 
+## Lấy dumps ở đâu
+
+Nếu chưa có sẵn từ kernel baseline, sinh lại bằng `tools/extract_features.py`.
+Chỉ cần **20 file**, không phải cả 90:
+
+```bash
+./tools/extract_all.sh <checkpoint-root> dumps av      # ~2 giờ GPU
+```
+
+Đặc trưng lấy là đầu vào của `our_classifier` — tức đầu ra `temporal_net`, biểu diễn
+hợp nhất 512 chiều ngay trước bộ phân loại. Bắt bằng forward hook, không sửa model.
+
+Script **không** bọc `DataParallel`: nó nhân bản module nên hook đăng ký trên bản gốc
+sẽ không kích hoạt, và trên phiên 2 GPU đặc trưng sẽ rỗng hoặc cũ. Checkpoint phát
+hành được lưu qua DataParallel nên script tự bỏ tiền tố `module.`.
+
+Cả hai corpus phải sẵn sàng cùng lúc, vì mỗi checkpoint chạy trên **cả hai** tập test.
+
 ## Chạy
 
 ```bash
