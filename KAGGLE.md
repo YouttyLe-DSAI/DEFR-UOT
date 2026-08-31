@@ -47,17 +47,55 @@ annotation chỉ ghi được một gốc đường dẫn.
 Cả ba vấn đề được giải quyết bằng cây symlink ở §3 Cell 4, **không sửa dòng nào của
 code baseline**.
 
-## 2. Còn thiếu: checkpoint pretrain
+## 2. Checkpoint: cẩn thận nhầm loại file
 
-Trong danh sách Input chưa thấy 2 file bắt buộc:
+Repo cần đúng **2 file encoder**, tên bị hardcode trong `models/Generate_Model.py`:
 
-| File | Kích thước | Nguồn |
+| Cần | Là gì |
+|---|---|
+| `mae_face_pretrain_vit_base.pth` | encoder **thị giác** MAE-Face ViT-B |
+| `audiomae_pretrained.pth` | encoder **âm thanh** AudioMAE ViT-B |
+
+Model `modelMMA` chứa nhiều hơn thế, và không phải file nào cũng dùng để train:
+
+| File trong mount | Thực chất | Dùng làm gì |
 |---|---|---|
-| `mae_face_pretrain_vit_base.pth` | ~1.3 GB | https://github.com/FuxiVirtualHuman/MAE-Face/releases |
-| `audiomae_pretrained.pth` | ~1.2 GB | https://github.com/facebookresearch/AudioMAE |
+| `pretrained.pth` | encoder AudioMAE | ✅ đổi tên → `audiomae_pretrained.pth` |
+| `mae_face_visualize_vit_base.pth` | MAE-Face **bản có decoder** | ⚠ không phải bản `pretrain` |
+| `checkpoint/MAFW_224/fold*.pth` | model MMA-DFER **đã train xong** | ❌ không dùng train, dùng để verify |
+| `checkpoint/DFEW_224/fold*.pth` | như trên | ❌ / verify |
 
-Tải về máy → tạo một Kaggle Dataset (vd `mma-dfer-pretrained`) → Add Input.
-Không có 2 file này thì `GenerateModel.__init__` chết ngay dòng `torch.load`.
+> ⚠ `GenerateModel` nạp encoder bằng `strict=False`. Đưa nhầm file **không báo lỗi** —
+> nó im lặng nạp gần như không có gì rồi train từ đầu, và bạn chỉ phát hiện sau khi
+> accuracy thấp một cách khó hiểu. Dùng `tools/check_ckpt.py` để nhận diện file trước:
+
+```bash
+python tools/check_ckpt.py <mount>/pretrained.pth <mount>/checkpoint/mae_face_visualize_vit_base.pth
+```
+
+Script phân biệt bằng nội dung: `patch_embed.proj.weight` có 1 kênh → audio encoder,
+3 kênh → vision encoder; có `decoder_*` → bản `visualize`; có `our_classifier`/
+`temporal_net` → model đã train.
+
+Về bản `visualize`: nó gồm cả decoder, khác bản `pretrain` mà repo yêu cầu. Encoder vẫn
+nạp được dưới `strict=False`, nhưng **phải đọc dòng `Image checkpoint loading:`** in ra
+lúc dựng model — `missing_keys` dài nghĩa là không nạp được gì đáng kể, khi đó tải đúng
+`mae_face_pretrain_vit_base.pth` từ
+[MAE-Face releases](https://github.com/FuxiVirtualHuman/MAE-Face/releases).
+
+### Dùng checkpoint đã train của tác giả để kiểm chứng dataset
+
+Đây là công dụng thật của `checkpoint/{MAFW,DFEW}_224/fold*.pth`: chạy model đã train
+xong của tác giả trên dữ liệu **bạn tự preprocess**. Số ra gần số công bố ⇒ toàn bộ
+đường ống dữ liệu đúng. Số thấp bất thường ⇒ có chỗ hỏng, và biết trước khi đốt GPU thì
+rẻ hơn nhiều. Với DFEW fold 1 @224, README dataset của bạn ghi mốc **UAR 63.63 / WAR 73.99**.
+
+```bash
+python evaluate.py --dataset DFEW --fold 1 --img-size 224 \
+    --checkpoint <mount>/checkpoint/DFEW_224/fold1_224.pth
+```
+
+Không truyền `--use-uot`: checkpoint của tác giả là kiến trúc baseline.
 
 ## 3. Notebook — các cell
 
