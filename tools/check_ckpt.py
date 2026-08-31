@@ -52,7 +52,19 @@ def find_checkpoints(root='/kaggle/input', max_depth=10):
     return sorted(hits)
 
 
+class _Stub:
+    """Placeholder for the helper objects main.py pickles into a checkpoint."""
+
+
+def _register_stubs():
+    import __main__
+    for name in ('RecorderMeter', 'AverageMeter', 'ProgressMeter'):
+        if not hasattr(__main__, name):
+            setattr(__main__, name, _Stub)
+
+
 def main():
+    _register_stubs()
     ap = argparse.ArgumentParser()
     ap.add_argument('paths', nargs='*')
     ap.add_argument('--find', metavar='ROOT', nargs='?', const='/kaggle/input',
@@ -86,8 +98,16 @@ def main():
             # torch >= 2.6 defaults weights_only=True, which rejects the
             # argparse.Namespace these checkpoints carry.
             ckpt = torch.load(path, map_location='cpu', weights_only=False)
+        except AttributeError as exc:
+            # A finished run pickles helper objects that main.py defines in
+            # __main__ (RecorderMeter and friends), which are not importable
+            # from here. Their presence is itself the giveaway.
+            print('  => a TRAINED MMA-DFER model (pickles {} from __main__)'.format(
+                str(exc).split("'")[1] if "'" in str(exc) else '?'))
+            print('     -> for evaluate.py only, NOT for training')
+            continue
         except Exception as exc:
-            print('  !! cannot load:', exc)
+            print('  !! cannot load:', str(exc).split('\n')[0])
             continue
 
         if isinstance(ckpt, dict) and 'model' in ckpt:
