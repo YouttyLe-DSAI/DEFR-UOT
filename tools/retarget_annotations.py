@@ -1,0 +1,90 @@
+"""Rewrite the dataset root inside the annotation .txt files.
+
+The shipped annotations point at the authors' cluster
+(/scratch/chumache/dfer_datasets/...). Point them at your own copy instead.
+
+  python tools/retarget_annotations.py --dataset DFEW \
+      --new-root /data/dfer/dfew/clip_224x224 --recount
+
+Each line is "<frames_dir> <num_frames> <label>". --recount replaces the frame
+count with the real number of files on disk, which you want if your
+preprocessing produced a different sampling than the original release.
+"""
+
+import argparse
+import glob
+import os
+
+OLD_ROOTS = {
+    'DFEW': '/scratch/chumache/dfer_datasets/dfew/clip_224x224',
+    'MAFW': '/scratch/chumache/dfer_datasets/mfaw/clips_faces',
+}
+FILES = {
+    'DFEW': ['DFEW_set_{}_train.txt', 'DFEW_set_{}_test.txt'],
+    'MAFW': ['MAFW_set_{}_train_faces.txt', 'MAFW_set_{}_test_faces.txt'],
+}
+
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument('--dataset', required=True, choices=['DFEW', 'MAFW'])
+    p.add_argument('--new-root', required=True,
+                   help='directory that directly contains the per-clip frame folders')
+    p.add_argument('--old-root', default=None)
+    p.add_argument('--annotation-dir', default='./annotation')
+    p.add_argument('--recount', action='store_true',
+                   help='re-derive num_frames by listing each folder')
+    p.add_argument('--drop-missing', action='store_true',
+                   help='remove entries whose frame folder does not exist')
+    p.add_argument('--dry-run', action='store_true')
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+    old_root = (args.old_root or OLD_ROOTS[args.dataset]).rstrip('/')
+    new_root = args.new_root.rstrip('/')
+
+    if args.dataset == 'MAFW' and 'mfaw' not in new_root:
+        print('!! WARNING: dataloader/video_dataloader.py selects the MAFW audio branch\n'
+              '   with `elif "mfaw" in path`. Your new root does not contain "mfaw",\n'
+              '   so audio loading will crash. Rename the directory or patch the loader.')
+    if args.dataset == 'DFEW' and 'clip_224x224' not in new_root:
+        print('!! WARNING: the DFEW audio branch is selected by `if "clip_224x224" in path`.\n'
+              '   Your new root does not contain "clip_224x224".')
+
+    for template in FILES[args.dataset]:
+        for fold in range(1, 6):
+            path = os.path.join(args.annotation_dir, template.format(fold))
+            if not os.path.exists(path):
+                print('skip (not found):', path)
+                continue
+
+            out, missing, changed = [], 0, 0
+            for line in open(path):
+                line = line.strip()
+                if not line:
+                    continue
+                folder, n_frames, label = line.rsplit(' ', 2)
+                new_folder = folder.replace(old_root, new_root)
+                if new_folder != folder:
+                    changed += 1
+
+                if not os.path.isdir(new_folder):
+                    missing += 1
+                    if args.drop_missing:
+                        continue
+                elif args.recount:
+                    n_frames = str(len(glob.glob(os.path.join(new_folder, '*'))))
+
+                out.append('{} {} {}'.format(new_folder, n_frames, label))
+
+            print('{}: {} lines, {} retargeted, {} missing folders'.format(
+                os.path.basename(path), len(out), changed, missing))
+            if not args.dry_run:
+                with open(path, 'w') as f:
+                    f.write('\n'.join(out) + '\n')
+
+
+if __name__ == '__main__':
+    main()

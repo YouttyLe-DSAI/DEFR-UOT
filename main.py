@@ -50,6 +50,21 @@ def parse_args():
     parser.add_argument('--temporal-layers', type=int, default=1)
     parser.add_argument('--img-size', type=int, default=224)
 
+    # --- Unbalanced Optimal Transport fusion ---
+    parser.add_argument('--use-uot', action='store_true',
+                        help='replace the mean-pool broadcast fusion with UOT-aligned fusion')
+    parser.add_argument('--uot-eps', type=float, default=0.05,
+                        help='entropic regularization; cost is 1-cosine so it lives in [0,2]')
+    parser.add_argument('--uot-tau', type=float, default=1.0,
+                        help='marginal relaxation; large (e.g. 1e6) recovers balanced OT')
+    parser.add_argument('--uot-iters', type=int, default=10)
+    parser.add_argument('--uot-detach', action='store_true',
+                        help='treat the transport plan as fixed routing weights (no backprop through the solver)')
+
+    parser.add_argument('--folds', nargs='+', type=int, default=None,
+                        help='1-based folds to run, e.g. --folds 1. Default: all 5. '
+                             'Needed when the session has a wall-clock limit (Kaggle).')
+
     args = parser.parse_args()
     return args
 
@@ -72,7 +87,7 @@ def main(set, args):
         os.makedirs('./log/' + 'DFEW-' + time_str + '-set' + str(data_set) + '-log/code/AudioMAE')
         os.makedirs('./log/' + 'DFEW-' + time_str + '-set' + str(data_set) + '-log/code/dataloader')
 
-        for filename in ['main.py', 'train_DFEW.sh', 'train_MAFW.sh', 'models/Generate_Model.py', 'models/Temporal_Model.py', 'dataloader/video_dataloader.py', 'dataloader/video_transform.py', 'models/models_vit.py', 'AudioMAE/audio_models_vit.py']:
+        for filename in ['main.py', 'train_DFEW.sh', 'train_MAFW.sh', 'models/Generate_Model.py', 'models/Temporal_Model.py', 'dataloader/video_dataloader.py', 'dataloader/video_transform.py', 'models/models_vit.py', 'models/uot.py', 'AudioMAE/audio_models_vit.py']:
             shutil.copyfile(filename, './log/' + 'DFEW-' + time_str + '-set' + str(data_set) + '-log/code/'+filename)
 
     elif args.dataset == "MAFW":
@@ -91,7 +106,7 @@ def main(set, args):
         os.makedirs('./log/' + 'MAFW-' + time_str + '-set' + str(data_set) + '-log/code/AudioMAE')
         os.makedirs('./log/' + 'MAFW-' + time_str + '-set' + str(data_set) + '-log/code/dataloader')
 
-        for filename in ['main.py', 'train_DFEW.sh', 'train_MAFW.sh', 'models/Generate_Model.py', 'models/Temporal_Model.py', 'dataloader/video_dataloader.py', 'dataloader/video_transform.py', 'models/models_vit.py', 'AudioMAE/audio_models_vit.py']:
+        for filename in ['main.py', 'train_DFEW.sh', 'train_MAFW.sh', 'models/Generate_Model.py', 'models/Temporal_Model.py', 'dataloader/video_dataloader.py', 'dataloader/video_transform.py', 'models/models_vit.py', 'models/uot.py', 'AudioMAE/audio_models_vit.py']:
             shutil.copyfile(filename, './log/' + 'MAFW-' + time_str + '-set' + str(data_set) + '-log/code/'+filename)
 
     best_acc = 0
@@ -135,6 +150,8 @@ def main(set, args):
         if "norm_xt_2" in name:
             param.requires_grad = True
         if "norm_qs" in name:
+            param.requires_grad = True
+        if "uot_fusion" in name:
             param.requires_grad = True
 
     model_parameters = model.parameters()
@@ -545,12 +562,16 @@ if __name__ == '__main__':
         args.number_class = 11
         args.class_names = ["1", '2', '3', '4','5', '6', '7', '8', '9', '10', '11']
 
-    for set in range(all_fold):
+    folds = list(range(all_fold)) if args.folds is None else [f - 1 for f in args.folds]
+    assert all(0 <= f < all_fold for f in folds), '--folds must be within 1..{}'.format(all_fold)
+
+    for set in folds:
         uar, war = main(set, args)
         UAR += float(uar)
         WAR += float(war)
-        
-    print('********* Final Results *********')   
-    print("UAR: %0.2f" % (UAR/all_fold))
-    print("WAR: %0.2f" % (WAR/all_fold))
+
+    print('********* Final Results *********')
+    print("Averaged over folds: {}".format([f + 1 for f in folds]))
+    print("UAR: %0.2f" % (UAR/len(folds)))
+    print("WAR: %0.2f" % (WAR/len(folds)))
     print('*********************************')

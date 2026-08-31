@@ -42,6 +42,16 @@ def parse_args():
     parser.add_argument('--workers', type=int, default=8)
 
     parser.add_argument('--fold', type=int, default=1)
+
+    # --- Unbalanced Optimal Transport fusion ---
+    # These MUST match the flags used at training time, otherwise the
+    # architecture differs from the checkpoint and load_state_dict fails.
+    parser.add_argument('--use-uot', action='store_true')
+    parser.add_argument('--uot-eps', type=float, default=0.05)
+    parser.add_argument('--uot-tau', type=float, default=1.0)
+    parser.add_argument('--uot-iters', type=int, default=10)
+    parser.add_argument('--uot-detach', action='store_true')
+
     args = parser.parse_args()
     return args
 
