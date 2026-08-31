@@ -586,8 +586,9 @@ def computer_uar_war(val_loader, model, checkpoint_path, log_confusion_matrix_pa
     elif args.dataset == "MAFW":
         title_ = "Confusion Matrix on MAFW fold "+str(data_set)
 
-    if args.eval_num_classes:
-        class_names = class_names[:args.eval_num_classes]
+    # class_names comes from the dataset name and may be longer than the label space
+    # actually in use (MAFW lists 11 while --num-classes 7 trains on the shared 7).
+    class_names = class_names[:normalized_cm.shape[0]]
     plot_confusion_matrix(normalized_cm, classes=class_names, normalize=True, title=title_)
     plt.savefig(os.path.join(log_confusion_matrix_path))
     plt.close()
@@ -633,7 +634,10 @@ if __name__ == '__main__':
     elif args.dataset == "MAFW":
         all_fold = 5
         args.number_class = args.num_classes or 11
-        args.class_names = ["1", '2', '3', '4','5', '6', '7', '8', '9', '10', '11']
+        # First 7 match DFEW's order, which is what makes the shared label space work.
+        args.class_names = ['happiness', 'sadness', 'neutral', 'anger', 'surprise',
+                            'disgust', 'fear', 'contempt', 'anxiety', 'helplessness',
+                            'disappointment']
 
     folds = list(range(all_fold)) if args.folds is None else [f - 1 for f in args.folds]
     assert all(0 <= f < all_fold for f in folds), '--folds must be within 1..{}'.format(all_fold)
