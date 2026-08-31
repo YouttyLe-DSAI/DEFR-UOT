@@ -46,6 +46,9 @@ def parse_args():
     # --- Unbalanced Optimal Transport fusion ---
     # These MUST match the flags used at training time, otherwise the
     # architecture differs from the checkpoint and load_state_dict fails.
+    parser.add_argument('--zero-audio', action='store_true',
+                        help='replace every spectrogram with the constant a missing .wav '
+                             'produces, to measure what the audio branch actually contributes')
     parser.add_argument('--use-uot', action='store_true')
     parser.add_argument('--uot-eps', type=float, default=0.05)
     parser.add_argument('--uot-tau', type=float, default=1.0)
@@ -80,7 +83,8 @@ def main(set, args):
                                              num_workers=args.workers,
                                              pin_memory=True)
  
-    uar, war = computer_uar_war(val_loader, model, args.checkpoint, data_set)
+    uar, war = computer_uar_war(val_loader, model, args.checkpoint, data_set,
+                                zero_audio=args.zero_audio)
   
     return uar, war
 
@@ -230,7 +234,12 @@ def plot_confusion_matrix(cm, classes, normalize=False, title='confusion matrix'
     plt.xlabel('Predicted label', fontsize=18)
     plt.tight_layout()
 
-def computer_uar_war(val_loader, model, checkpoint_path, data_set):
+# What dataloader.video_dataloader produces for a clip whose .wav is missing:
+# torch.zeros(512,128) pushed through (x + 4.2677393) / (4.5689974 * 2).
+DEAD_AUDIO_VALUE = 4.2677393 / (4.5689974 * 2)
+
+
+def computer_uar_war(val_loader, model, checkpoint_path, data_set, zero_audio=False):
     
     pre_trained_dict = torch.load(checkpoint_path, weights_only=False)['state_dict']
     model.load_state_dict(pre_trained_dict)
@@ -243,6 +252,8 @@ def computer_uar_war(val_loader, model, checkpoint_path, data_set):
             images = images.cuda()
             target = target.cuda()
             audio = audio.cuda()
+            if zero_audio:
+                audio = torch.full_like(audio, DEAD_AUDIO_VALUE)
             output = model(images, audio)        
 
             predicted = output.argmax(dim=1, keepdim=True)
@@ -268,6 +279,8 @@ def computer_uar_war(val_loader, model, checkpoint_path, data_set):
     print("Confusion Matrix Diag:", list_diag)
     print("UAR: %0.2f" % uar)
     print("WAR: %0.2f" % war)
+    if zero_audio:
+        print("(audio was zeroed -- compare against the normal run to size the audio branch)")
     return uar, war
 
 
