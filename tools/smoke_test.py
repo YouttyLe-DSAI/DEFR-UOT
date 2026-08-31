@@ -88,29 +88,7 @@ def main():
     print('loss {:.4f}'.format(loss.item()))
 
     if args.use_uot:
-        gate_g, other_g = [], []
-        for name, p in model.named_parameters():
-            if 'uot' not in name:
-                continue
-            g = 0.0 if p.grad is None else float(p.grad.abs().max())
-            (gate_g if 'gate' in name else other_g).append((name, g))
-
-        print('== UOT gradient check ==')
-        print('  gates ({} tensors) -- MUST be non-zero:'.format(len(gate_g)))
-        for name, g in gate_g[:4]:
-            print('    {:<45} |grad|max={:.3e}'.format(name, g))
-        print('  proj/norm ({} tensors) -- EXPECTED to be 0.0 at step 0:'.format(len(other_g)))
-        for name, g in other_g[:4]:
-            print('    {:<45} |grad|max={:.3e}'.format(name, g))
-        print('  (proj/norm sit behind tanh(gate)=0, so their gradient is exactly 0')
-        print('   on the very first step and becomes non-zero once the gates move.')
-        print('   Zero gate gradients, on the other hand, mean the module is disconnected.)')
-
-        if not gate_g:
-            print('  !! no UOT parameters found -- is use_uot wired into GenerateModel?')
-        elif max(g for _, g in gate_g) == 0.0:
-            print('  !! FAIL: gate gradients are zero -- UOT output never reaches the loss')
-
+        # Must run BEFORE the optimizer steps below, which mutate the weights.
         print('== zero-init check: UOT output must equal the baseline at init ==')
         model.eval()
         with torch.no_grad():
@@ -121,6 +99,42 @@ def main():
         delta = (base - uot).abs().max().item()
         print('  max|baseline - uot| = {:.3e}  {}'.format(
             delta, 'OK' if delta < 1e-4 else '<-- gates are not zero-initialized'))
+        model.train()
+
+        # Everything here sits behind TWO multiplicative zero-init gates: mine
+        # (gate_a2v / gate_v2a) and MMA-DFER's own all_gate, which the baseline
+        # also initialises to zeros. With all_gate == 0 the whole adapter branch
+        # is multiplied away, so on step 0 *every* UOT gradient is exactly zero
+        # by construction -- that is not evidence of a disconnected module.
+        # all_gate does receive gradient on step 0, so it moves first and the UOT
+        # gates start receiving gradient from step 1. Take a few optimizer steps
+        # and check they actually come alive.
+        print('== UOT gradient check (needs a few steps: see note below) ==')
+        uot_gates = [(n, p) for n, p in model.named_parameters()
+                     if 'uot' in n and 'gate' in n]
+        if not uot_gates:
+            print('  !! no UOT parameters found -- is use_uot wired into GenerateModel?')
+        else:
+            opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-4)
+            grads = []
+            for step in range(3):
+                opt.zero_grad()
+                loss = torch.nn.functional.cross_entropy(model(images, audio), target)
+                loss.backward()
+                g = max(float(p.grad.abs().max()) for _, p in uot_gates if p.grad is not None)
+                grads.append(g)
+                print('  step {}: loss {:.4f}   max |grad| over {} UOT gates = {:.3e}'.format(
+                    step, loss.item(), len(uot_gates), g))
+                opt.step()
+
+            if max(grads) > 0:
+                print('  OK: UOT gates receive gradient once all_gate moves off zero.')
+            else:
+                print('  !! FAIL: UOT gates never receive gradient -- the module is disconnected.')
+            print('  (step 0 being exactly 0.0 is expected: the baseline\'s own all_gate is')
+            print('   zero-initialised, so it zeroes the whole adapter branch on the first step.)')
+
+            model.zero_grad(set_to_none=True)
 
     print('== peak GPU memory: {:.2f} GB =='.format(torch.cuda.max_memory_allocated() / 1024 ** 3))
     print('SMOKE TEST PASSED')
