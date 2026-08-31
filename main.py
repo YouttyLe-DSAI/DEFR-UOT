@@ -50,16 +50,6 @@ def parse_args():
     parser.add_argument('--temporal-layers', type=int, default=1)
     parser.add_argument('--img-size', type=int, default=224)
 
-    # --- Unbalanced Optimal Transport fusion ---
-    parser.add_argument('--use-uot', action='store_true',
-                        help='replace the mean-pool broadcast fusion with UOT-aligned fusion')
-    parser.add_argument('--uot-eps', type=float, default=0.05,
-                        help='entropic regularization; cost is 1-cosine so it lives in [0,2]')
-    parser.add_argument('--uot-tau', type=float, default=1.0,
-                        help='marginal relaxation; large (e.g. 1e6) recovers balanced OT')
-    parser.add_argument('--uot-iters', type=int, default=10)
-    parser.add_argument('--uot-detach', action='store_true',
-                        help='treat the transport plan as fixed routing weights (no backprop through the solver)')
 
     parser.add_argument('--resume', type=str, default=None,
                         help="warm-start from a trained checkpoint, e.g. the authors' "
@@ -91,7 +81,7 @@ def main(set, args):
         os.makedirs('./log/' + 'DFEW-' + time_str + '-set' + str(data_set) + '-log/code/AudioMAE')
         os.makedirs('./log/' + 'DFEW-' + time_str + '-set' + str(data_set) + '-log/code/dataloader')
 
-        for filename in ['main.py', 'train_DFEW.sh', 'train_MAFW.sh', 'models/Generate_Model.py', 'models/Temporal_Model.py', 'dataloader/video_dataloader.py', 'dataloader/video_transform.py', 'models/models_vit.py', 'models/uot.py', 'AudioMAE/audio_models_vit.py']:
+        for filename in ['main.py', 'train_DFEW.sh', 'train_MAFW.sh', 'models/Generate_Model.py', 'models/Temporal_Model.py', 'dataloader/video_dataloader.py', 'dataloader/video_transform.py', 'models/models_vit.py', 'AudioMAE/audio_models_vit.py']:
             shutil.copyfile(filename, './log/' + 'DFEW-' + time_str + '-set' + str(data_set) + '-log/code/'+filename)
 
     elif args.dataset == "MAFW":
@@ -110,7 +100,7 @@ def main(set, args):
         os.makedirs('./log/' + 'MAFW-' + time_str + '-set' + str(data_set) + '-log/code/AudioMAE')
         os.makedirs('./log/' + 'MAFW-' + time_str + '-set' + str(data_set) + '-log/code/dataloader')
 
-        for filename in ['main.py', 'train_DFEW.sh', 'train_MAFW.sh', 'models/Generate_Model.py', 'models/Temporal_Model.py', 'dataloader/video_dataloader.py', 'dataloader/video_transform.py', 'models/models_vit.py', 'models/uot.py', 'AudioMAE/audio_models_vit.py']:
+        for filename in ['main.py', 'train_DFEW.sh', 'train_MAFW.sh', 'models/Generate_Model.py', 'models/Temporal_Model.py', 'dataloader/video_dataloader.py', 'dataloader/video_transform.py', 'models/models_vit.py', 'AudioMAE/audio_models_vit.py']:
             shutil.copyfile(filename, './log/' + 'MAFW-' + time_str + '-set' + str(data_set) + '-log/code/'+filename)
 
     best_acc = 0
@@ -155,27 +145,23 @@ def main(set, args):
             param.requires_grad = True
         if "norm_qs" in name:
             param.requires_grad = True
-        if "uot_fusion" in name:
-            param.requires_grad = True
 
     model_parameters = model.parameters()
     model = torch.nn.DataParallel(model).cuda()
 
     if args.resume:
-        # Both arms of a comparison must warm-start from the same weights for the
-        # result to mean anything. strict=False on purpose: a --use-uot run has
-        # uot_fusion.* keys the source checkpoint cannot have, and those must stay
-        # at their zero-init values so the model still starts equal to the baseline.
+        # strict=False so a checkpoint that predates any architecture change still
+        # loads; anything it does not cover keeps its initial value. Read the counts
+        # below rather than assuming the load was complete.
         resume_path = args.resume.format(fold=data_set)
         state = torch.load(resume_path, map_location='cpu', weights_only=False)
         state = state.get('state_dict', state) if isinstance(state, dict) else state
         msg = model.load_state_dict(state, strict=False)
-        unexpected = list(msg.unexpected_keys)
-        non_uot_missing = [k for k in msg.missing_keys if 'uot_fusion' not in k]
         print('Resumed from {}'.format(resume_path))
-        print('  missing (uot_fusion, expected): {}'.format(len(msg.missing_keys) - len(non_uot_missing)))
-        print('  missing (OTHER -- should be 0): {} {}'.format(len(non_uot_missing), non_uot_missing[:5]))
-        print('  unexpected (should be 0)      : {} {}'.format(len(unexpected), unexpected[:5]))
+        print('  missing (should be 0)   : {} {}'.format(
+            len(msg.missing_keys), list(msg.missing_keys)[:5]))
+        print('  unexpected (should be 0): {} {}'.format(
+            len(msg.unexpected_keys), list(msg.unexpected_keys)[:5]))
         with open(log_txt_path, 'a') as f:
             f.write('resumed_from=' + resume_path + '\n')
 

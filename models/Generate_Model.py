@@ -5,7 +5,6 @@ import math
 from AudioMAE import audio_models_vit
 from timm.models.layers import to_2tuple
 from models import models_vit
-from models.uot import UOTFusion
 import torch.nn.functional as F
 from typing import Any, Callable, Dict, Optional, Sequence, Set, Tuple, Type, Union, List
 
@@ -107,20 +106,6 @@ class GenerateModel(nn.Module):
         
         assert len(self.audio_model.blocks) == len(self.image_encoder.blocks)
 
-        self.use_uot = getattr(args, 'use_uot', False)
-        if self.use_uot:
-            self.uot_fusion = nn.ModuleList([
-                UOTFusion(dim=128,
-                          n_frames=16,
-                          n_image=self.n_image,
-                          n_audio_t=32,
-                          n_audio_f=8,
-                          eps=getattr(args, 'uot_eps', 0.05),
-                          tau=getattr(args, 'uot_tau', 1.0),
-                          n_iters=getattr(args, 'uot_iters', 10),
-                          detach_plan=getattr(args, 'uot_detach', False))
-                for _ in range(len(self.image_encoder.blocks))])
-
     def _build_audio_model(self, model_name='vit_base_patch16', drop_path_rate=0.1, global_pool=False, mask_2d=True, use_custom_patch=False, ckpt_path='audiomae_pretrained.pth'):
         self.audio_model = audio_models_vit.__dict__[model_name](
             drop_path_rate=drop_path_rate,
@@ -190,11 +175,6 @@ class GenerateModel(nn.Module):
 
             image_lowdim_norm2 = image_lowdim_norm + audio_lowdim.mean(1).unsqueeze(1).repeat_interleave(t,0)
             audio_lowdim2 = audio_lowdim + image_lowdim_norm.view(B//t, t, self.n_image + 6 + 1, 128).mean(1).mean(1).unsqueeze(1) 
-
-            if self.use_uot:
-                a2v, v2a = self.uot_fusion[ii](image_lowdim_norm, audio_lowdim, n, t)
-                image_lowdim_norm2 = image_lowdim_norm2 + a2v
-                audio_lowdim2 = audio_lowdim2 + v2a
 
             image = self.image_encoder.forward_block_post(ii, image, image_lowdim_norm2, B)
             audio = self.audio_model.forward_block_post(ii, audio, audio_lowdim2)

@@ -39,7 +39,8 @@ Không trùng. Và **hai dataset hỏng theo hai kiểu khác nhau**:
 
 > Lưu ý khi tự kiểm tra: sau chuẩn hoá `(fbank + 4.2677) / 9.1380`, tensor toàn 0 trở
 > thành **hằng số ~0.467**, không phải 0. Nên dấu hiệu nhận biết audio chết là
-> **`std == 0`**, không phải "toàn số 0". `tools/smoke_test.py` kiểm tra đúng chỗ này.
+> **`std == 0`**, không phải "toàn số 0". Cách kiểm tra rẻ nhất là `evaluate.py --zero-audio`:
+> nếu bật cờ đó mà kết quả không đổi thì audio vốn đã không đóng góp gì.
 
 Vấn đề thứ ba: frames bị chia thành nhiều mount (MAFW 2 shard, DFEW 4 part) nhưng
 annotation chỉ ghi được một gốc đường dẫn.
@@ -95,7 +96,6 @@ python evaluate.py --dataset DFEW --fold 1 --img-size 224 \
     --checkpoint <mount>/checkpoint/DFEW_224/fold1_224.pth
 ```
 
-Không truyền `--use-uot`: checkpoint của tác giả là kiến trúc baseline.
 
 ## 3. Notebook — các cell
 
@@ -226,33 +226,19 @@ bản gốc, mà loader dùng cột đó để sample index.
 
 Tên file bị hardcode trong `models/Generate_Model.py`, phải đúng chính xác.
 
-### Cell 7 — smoke test (đừng bỏ qua)
+### Cell 7 — trích đặc trưng cho phân tích UOT
+
+Bước GPU duy nhất mà phần UOT cần. Sinh 20 file `.npz` (4 tổ hợp checkpoint × tập test,
+5 fold, phương thức `av`), khoảng 2 giờ.
 
 ```python
-!python tools/smoke_test.py --dataset MAFW --use-uot --batch-size 2
+!./tools/extract_all.sh {CKPT}/ /kaggle/working/dumps av
 ```
 
-Phải in `SMOKE TEST PASSED`, gradient của **gate** khác 0, và
-`max|baseline - uot| ... OK`. Dòng `peak GPU memory` cho biết batch-size nào vừa VRAM.
+Điều kiện: **cả hai** corpus đã dựng xong trong phiên này (Cell 4–5 chạy cho cả MAFW
+lẫn DFEW), vì mỗi checkpoint được chạy trên cả hai tập test.
 
-### Cell 8 — train
-
-```python
-!python main.py --dataset MAFW --folds 1 --epochs 5 \
-  --batch-size 4 --workers 2 --lr 7e-5 --weight-decay 1e-2 \
-  --print-freq 20 --temporal-layers 1 --img-size 224 \
-  --use-uot --uot-eps 0.05 --uot-tau 1.0 --uot-iters 10 \
-  --exper-name KAGGLE_UOT
-```
-
-Baseline để so sánh: bỏ `--use-uot` và đổi `--exper-name KAGGLE_BASE`.
-
-`--folds 1` là cờ mình mới thêm vào `main.py` — mặc định script gốc chạy **cả 5 fold
-liên tiếp trong một process**, không thể xong trong giới hạn phiên của Kaggle.
-
-Tham số đề xuất cho GPU Kaggle (T4 16GB): `--batch-size 4 --workers 2`
-(Kaggle chỉ có 2–4 vCPU nên `--workers 8` sẽ nghẽn). Giảm batch 8→4 thì hạ lr
-tương ứng 1e-4→7e-5.
+Xong thì chuyển sang `kaggle/UOT_CROSSCORPUS.ipynb` — từ đó trở đi là CPU.
 
 ## 4. Kết quả nằm ở đâu
 
@@ -278,11 +264,12 @@ một checkpoint 1.5 GB thì thoải mái, nhưng đừng giữ nhiều run tron
 | `/kaggle/temp` | không lưu, xoá sau mỗi phiên |
 | `/kaggle/input` | chỉ đọc |
 
-Chạy đủ **5 fold × 25 epoch × 2 config** là **không khả thi** trên Kaggle. Vì vậy:
+Việc dựng dữ liệu và trích đặc trưng thì vừa một phiên. Phân tích UOT chạy trên CPU
+nên không đụng tới quota GPU.
 
 - **Trên Kaggle:** 1 fold, 3–5 epoch, cho cả baseline và UOT. Mục tiêu là trả lời
   *"pipeline có chạy đúng không, UOT có học không, loss có giảm không"*.
-- **Trên server:** chạy thật theo `UOT_INTEGRATION.md` §4.
+- **Phân tích UOT:** `uot_crosscorpus/README.md`, chạy trên CPU từ các file `.npz`.
 
 Với phiên chạy dài, dùng **Save Version → Save & Run All (Commit)** thay vì phiên
 tương tác — phiên tương tác bị ngắt khi idle, commit thì chạy nền tới hết.
