@@ -50,6 +50,11 @@ def parse_args():
     # --- Unbalanced Optimal Transport fusion ---
     # These MUST match the flags used at training time, otherwise the
     # architecture differs from the checkpoint and load_state_dict fails.
+    parser.add_argument('--eval-num-classes', type=int, default=None,
+                        help='score using only the first N logits (MAFW model -> 7 classes)')
+    parser.add_argument('--test-annotation', type=str, default=None,
+                        help='score on a different corpus than the checkpoint was trained '
+                             "on, e.g. './annotation/MAFW_set_{fold}_test_faces7.txt'")
     parser.add_argument('--zero-audio', action='store_true',
                         help='replace every spectrogram with the constant a missing .wav '
                              'produces, to measure what the audio branch actually contributes')
@@ -74,6 +79,10 @@ def main(set, args):
         print("*********** MAFW Dataset Fold  " + str(data_set) + " ***********")
         test_annotation_file_path = "./annotation/MAFW_set_"+str(data_set)+"_test_faces.txt"
         args.number_class = 11      
+    if args.test_annotation:
+        test_annotation_file_path = args.test_annotation.format(fold=data_set)
+        print('Cross-corpus evaluation on: ' + test_annotation_file_path)
+
     model = GenerateModel(args=args)
     model = torch.nn.DataParallel(model).cuda()
     test_data = test_data_loader(list_file=test_annotation_file_path,
@@ -258,7 +267,9 @@ def computer_uar_war(val_loader, model, checkpoint_path, data_set, zero_audio=Fa
             audio = audio.cuda()
             if zero_audio:
                 audio = torch.full_like(audio, DEAD_AUDIO_VALUE)
-            output = model(images, audio)        
+            output = model(images, audio)
+            if getattr(args, 'eval_num_classes', None):
+                output = output[:, :args.eval_num_classes]
 
             predicted = output.argmax(dim=1, keepdim=True)
             correct += predicted.eq(target.view_as(predicted)).sum().item()

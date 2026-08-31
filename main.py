@@ -61,6 +61,20 @@ def parse_args():
     parser.add_argument('--uot-detach', action='store_true',
                         help='treat the transport plan as fixed routing weights (no backprop through the solver)')
 
+    parser.add_argument('--num-classes', type=int, default=None,
+                        help='override the class count. MAFW defaults to 11; pass 7 to '
+                             'train it in the label space it shares with DFEW.')
+    parser.add_argument('--train-annotation', type=str, default=None,
+                        help="training split, e.g. './annotation/MAFW_set_{fold}_train_faces7.txt'")
+    parser.add_argument('--eval-num-classes', type=int, default=None,
+                        help='score using only the first N logits. An MAFW model emits 11; '
+                             "restricting to 7 puts it on the same footing as a DFEW model, "
+                             'which is valid because the first 7 classes match in order.')
+    parser.add_argument('--test-annotation', type=str, default=None,
+                        help='score on a different corpus than the one trained on, e.g. '
+                             "'./annotation/MAFW_set_{fold}_test_faces7.txt'. {fold} is "
+                             'expanded per fold. The label spaces must line up: DFEW 7 '
+                             "classes == MAFW's first 7, same order.")
     parser.add_argument('--resume', type=str, default=None,
                         help="warm-start from a trained checkpoint, e.g. the authors' "
                              "release. May contain {fold}, expanded per fold. Weights only "
@@ -112,6 +126,18 @@ def main(set, args):
 
         for filename in ['main.py', 'train_DFEW.sh', 'train_MAFW.sh', 'models/Generate_Model.py', 'models/Temporal_Model.py', 'dataloader/video_dataloader.py', 'dataloader/video_transform.py', 'models/models_vit.py', 'models/uot.py', 'AudioMAE/audio_models_vit.py']:
             shutil.copyfile(filename, './log/' + 'MAFW-' + time_str + '-set' + str(data_set) + '-log/code/'+filename)
+
+    # Cross-corpus: train on one corpus, score on another. DFEW's 7 classes are the
+    # first 7 of MAFW's in the same order, so a DFEW model can be scored on MAFW-7
+    # directly -- see tools/make_mafw7.py, which writes those files.
+    if args.train_annotation:
+        train_annotation_file_path = args.train_annotation.format(fold=data_set)
+        print('Training split overridden: ' + train_annotation_file_path)
+    if args.test_annotation:
+        test_annotation_file_path = args.test_annotation.format(fold=data_set)
+        print('Cross-corpus evaluation on: ' + test_annotation_file_path)
+        with open(log_txt_path, 'a') as f:
+            f.write('test_annotation=' + test_annotation_file_path + '\n')
 
     best_acc = 0
     recorder = RecorderMeter(args.epochs)
@@ -169,6 +195,20 @@ def main(set, args):
         resume_path = args.resume.format(fold=data_set)
         state = torch.load(resume_path, map_location='cpu', weights_only=False)
         state = state.get('state_dict', state) if isinstance(state, dict) else state
+        # An MAFW checkpoint carries an 11-class head; training MAFW in the 7 shared
+        # classes needs its first 7 rows. Slicing is valid only because the class order
+        # matches -- DFEW's 7 are MAFW's first 7. Any other mismatch is left to fail.
+        model_state = model.state_dict()
+        sliced = []
+        for k, v in list(state.items()):
+            if k in model_state and v.shape != model_state[k].shape:
+                want, have = model_state[k].shape, v.shape
+                if len(want) == len(have) and want[0] < have[0] and want[1:] == have[1:]:
+                    state[k] = v[:want[0]]
+                    sliced.append('{} {}->{}'.format(k, tuple(have), tuple(want)))
+        if sliced:
+            print('  head sliced to the shared label space: ' + ', '.join(sliced))
+
         msg = model.load_state_dict(state, strict=False)
         unexpected = list(msg.unexpected_keys)
         non_uot_missing = [k for k in msg.missing_keys if 'uot_fusion' not in k]
@@ -305,6 +345,12 @@ def train(train_loader, model, criterion, optimizer, epoch, args, log_txt_path):
     return top1.avg, losses.avg
 
 
+def _restrict(output, args):
+    """Keep only the first N logits when scoring in a smaller label space."""
+    n = getattr(args, 'eval_num_classes', None)
+    return output[:, :n] if n else output
+
+
 def validate(val_loader, model, criterion, args, log_txt_path):
     losses = AverageMeter('Loss', ':.4f')
     top1 = AverageMeter('Accuracy', ':6.3f')
@@ -323,7 +369,7 @@ def validate(val_loader, model, criterion, args, log_txt_path):
             target = target.cuda()
             audio = audio.cuda()
             # compute output
-            output = model(images, audio)        
+            output = _restrict(model(images, audio), args)
             loss = criterion(output, target)
             # measure accuracy and record loss
             acc1, _ = accuracy(output, target, topk=(1, 5))
@@ -503,7 +549,10 @@ def computer_uar_war(val_loader, model, checkpoint_path, log_confusion_matrix_pa
             images = images.cuda()
             target = target.cuda()
             audio = audio.cuda()
-            output = model(images, audio)        
+            output = model(images, audio)
+            n_eval = getattr(args, 'eval_num_classes', None)
+            if n_eval:
+                output = output[:, :n_eval]
 
             predicted = output.argmax(dim=1, keepdim=True)
             correct += predicted.eq(target.view_as(predicted)).sum().item()
@@ -537,6 +586,8 @@ def computer_uar_war(val_loader, model, checkpoint_path, log_confusion_matrix_pa
     elif args.dataset == "MAFW":
         title_ = "Confusion Matrix on MAFW fold "+str(data_set)
 
+    if args.eval_num_classes:
+        class_names = class_names[:args.eval_num_classes]
     plot_confusion_matrix(normalized_cm, classes=class_names, normalize=True, title=title_)
     plt.savefig(os.path.join(log_confusion_matrix_path))
     plt.close()
@@ -567,7 +618,7 @@ if __name__ == '__main__':
     print('************************')
 
     if args.dataset == "DFEW":
-        args.number_class = 7
+        args.number_class = args.num_classes or 7
         args.class_names = [
 	'happiness.',
 	'sadness.',
@@ -581,7 +632,7 @@ if __name__ == '__main__':
         all_fold = 5
     elif args.dataset == "MAFW":
         all_fold = 5
-        args.number_class = 11
+        args.number_class = args.num_classes or 11
         args.class_names = ["1", '2', '3', '4','5', '6', '7', '8', '9', '10', '11']
 
     folds = list(range(all_fold)) if args.folds is None else [f - 1 for f in args.folds]
