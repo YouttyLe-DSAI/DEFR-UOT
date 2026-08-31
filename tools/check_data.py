@@ -39,7 +39,7 @@ def main():
 
     sample = rows if args.n == 0 else random.Random(args.seed).sample(rows, min(args.n, len(rows)))
 
-    bad_dir = bad_count = no_wav = unmatched = short = 0
+    bad_dir = bad_count = no_wav = unmatched = short = empty = 0
     labels = set()
     for folder, n_frames, label in sample:
         labels.add(int(label))
@@ -47,6 +47,12 @@ def main():
             bad_dir += 1
             continue
         frames = sorted(glob.glob(os.path.join(folder, '*')))
+        if not frames:
+            # _get_train_indices does np.pad(np.array([]), ..., 'edge'), which raises
+            # ValueError: can't extend empty axis 0. --drop-missing will not catch
+            # this, because the folder does exist -- it is just empty.
+            empty += 1
+            continue
         if len(frames) != int(n_frames):
             bad_count += 1
         if len(frames) < 16:
@@ -59,7 +65,9 @@ def main():
 
     print('checked        : {}'.format(len(sample)))
     print('missing folder : {}'.format(bad_dir))
-    print('frame count off: {}   (fix with tools/retarget_annotations.py --recount)'.format(bad_count))
+    print('EMPTY folder   : {}{}'.format(
+        empty, '   <-- FATAL: np.pad on an empty axis raises in _get_train_indices' if empty else ''))
+    print('frame count off: {}   (only meaningful if --recount has NOT been run)'.format(bad_count))
     print('fewer than 16 frames: {}   (padded by the loader, but worth knowing)'.format(short))
     print('missing .wav   : {}'.format(no_wav))
     print('UNMATCHED path : {}   <-- FATAL: loader hits an undefined `fbank`'.format(unmatched))

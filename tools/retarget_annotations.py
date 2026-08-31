@@ -35,7 +35,7 @@ def parse_args():
     p.add_argument('--recount', action='store_true',
                    help='re-derive num_frames by listing each folder')
     p.add_argument('--drop-missing', action='store_true',
-                   help='remove entries whose frame folder does not exist')
+                   help='remove entries whose frame folder is missing OR empty')
     p.add_argument('--dry-run', action='store_true')
     return p.parse_args()
 
@@ -60,7 +60,7 @@ def main():
                 print('skip (not found):', path)
                 continue
 
-            out, missing, changed = [], 0, 0
+            out, missing, changed, empty = [], 0, 0, 0
             for line in open(path):
                 line = line.strip()
                 if not line:
@@ -74,13 +74,23 @@ def main():
                     missing += 1
                     if args.drop_missing:
                         continue
-                elif args.recount:
-                    n_frames = str(len(glob.glob(os.path.join(new_folder, '*'))))
+                else:
+                    found = len(glob.glob(os.path.join(new_folder, '*')))
+                    if found == 0:
+                        # An empty folder passes isdir() but crashes the loader:
+                        # _get_train_indices pads an empty array with mode='edge'.
+                        empty += 1
+                        if args.drop_missing:
+                            continue
+                    if args.recount:
+                        n_frames = str(found)
 
                 out.append('{} {} {}'.format(new_folder, n_frames, label))
 
-            print('{}: {} lines, {} retargeted, {} missing folders'.format(
-                os.path.basename(path), len(out), changed, missing))
+            print('{}: {} lines, {} retargeted, {} missing, {} empty{}'.format(
+                os.path.basename(path), len(out), changed, missing, empty,
+                '' if args.drop_missing or not (missing or empty)
+                else '   <-- rerun with --drop-missing'))
             if not args.dry_run:
                 with open(path, 'w') as f:
                     f.write('\n'.join(out) + '\n')
