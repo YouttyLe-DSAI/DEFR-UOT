@@ -1,7 +1,7 @@
 # Kiến trúc UOT trong MMA-DFER
 
-Gộp từ `UOT_ARCHITECTURE.md`. Xem thêm: `UOT_DIFF.md` (diff so với bản gốc),
-`UOT_INTEGRATION.md` (kế hoạch tích hợp và ngân sách train lại).
+Xem thêm: `UOT_DIFF.md` (UOT đụng vào những phần nào của pipeline gốc) và
+`UOT_INTEGRATION.md` (kế hoạch tích hợp, ngân sách train lại).
 
 ---
 
