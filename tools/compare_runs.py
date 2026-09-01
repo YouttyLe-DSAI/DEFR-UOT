@@ -51,9 +51,16 @@ def parse_log(path):
 
 
 def find_run(log_root, name):
+    """Runs matching `name`, completed ones first.
+
+    An interrupted session leaves a log directory with no UAR line. Sorting by
+    name alone would put such a directory first and the comparison would report
+    'not finished' while a finished run sat right next to it.
+    """
     hits = [d for d in glob.glob(os.path.join(log_root, '*'))
             if name in os.path.basename(d) and os.path.isfile(os.path.join(d, 'log.txt'))]
-    return sorted(hits)
+    done = [d for d in hits if parse_log(os.path.join(d, 'log.txt'))['uar'] is not None]
+    return sorted(done) + sorted(d for d in hits if d not in done)
 
 
 def parse_args():
@@ -96,6 +103,11 @@ def main():
 
     show('A. BASELINE', base)
     show('B. UOT', uot)
+
+    n_partial = sum(1 for _, r in base + uot if r['uar'] is None)
+    if n_partial:
+        print('\n  ({} run bo do khong co dong UAR -- bo qua, dung run da chay xong)'
+              .format(n_partial))
 
     a, b = base[0][1], uot[0][1]
     if a['uar'] is None or b['uar'] is None:
