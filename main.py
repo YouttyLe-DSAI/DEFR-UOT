@@ -100,6 +100,11 @@ def parse_args():
                              "'attn' = row-wise softmax, the control arm that isolates "
                              "whether transport structure matters or just the added "
                              "capacity. Identical parameter count either way.")
+    parser.add_argument('--no-prev-ckpt', action='store_true',
+                        help='dung giu model.prev.pth. Tiet kiem 780 MB moi run '
+                             '(15,6 GB ca loat) nhung mat duong lui khi checkpoint '
+                             'moi nhat con nguyen ma sai.')
+
     # --- Theo doi (tuy chon, chiu loi, khong anh huong so hoc) ---
     parser.add_argument('--wandb', action='store_true',
                         help='gui metric len wandb. Gom hai may vao mot dashboard. '
@@ -342,7 +347,7 @@ def main(set, args):
                 '  str.format tren chuoi khong co {fold} tra ve NGUYEN chuoi, nen fold 4\n'
                 '  va 5 se nap trong so cua fold 3 -- da train tren du lieu chong lan\n'
                 '  test cua chung. So se dep gia tao, khong mot canh bao nao.')
-        rt = args.resume_training.format(fold=data_set)
+        rt = pick_checkpoint(args.resume_training.format(fold=data_set))
         ck = torch.load(rt, map_location='cpu', weights_only=False)
 
         # Doi chieu cau hinh TRUOC khi nap. Ba nhanh attn / tau=1e6 / tau=1.0 co
@@ -438,7 +443,7 @@ def main(set, args):
                          'args': args,
                          'fold': data_set,
                          'recorder': recorder}, is_best,
-                        checkpoint_path)
+                        checkpoint_path, keep_prev=not args.no_prev_ckpt)
 
         # print and save log
         epoch_time = time.time() - start_time
@@ -596,7 +601,7 @@ def validate(val_loader, model, criterion, args, log_txt_path):
     return top1.avg, losses.avg
 
 
-def save_checkpoint(state, is_best, checkpoint_path):
+def save_checkpoint(state, is_best, checkpoint_path, keep_prev=True):
     """Write the latest epoch. One file, deliberately -- there is no best-epoch copy.
 
     The protocol we are reproducing is explicit (MMA-DFER, CVPR 2024 Workshops, 4.2):
@@ -629,7 +634,38 @@ def save_checkpoint(state, is_best, checkpoint_path):
         torch.save(state, f)
         f.flush()
         os.fsync(f.fileno())          # bytes on the platter, not just in page cache
+
+    # Keep the previous epoch beside the current one, by RENAME rather than copy.
+    # A copy would add 780 MB of writes per epoch -- 390 GB across the 20-run
+    # sweep -- for a file that is about to be overwritten anyway. A rename is a
+    # single metadata operation.
+    #
+    # Atomic write already rules out a truncated file. What this adds is a way
+    # back when the newest checkpoint is intact but wrong: a fold that diverged,
+    # a bad resume, a disk that returned garbage after a successful write.
+    if keep_prev and os.path.exists(checkpoint_path):
+        os.replace(checkpoint_path, checkpoint_path.replace('model.pth',
+                                                            'model.prev.pth'))
     os.replace(tmp, checkpoint_path)
+
+
+def pick_checkpoint(path):
+    """Return the newest usable checkpoint, preferring model.pth.
+
+    There is a window of one rename between moving the old file to
+    model.prev.pth and moving the new one into place. It is a single syscall
+    wide, but a run that dies inside it would leave model.pth missing and
+    model.prev.pth holding the last good epoch -- so resume looks there rather
+    than reporting the run unrecoverable.
+    """
+    if os.path.exists(path):
+        return path
+    prev = path.replace('model.pth', 'model.prev.pth')
+    if os.path.exists(prev):
+        print('CANH BAO: khong thay {} -- dung {} (bi ngat dung luc doi ten). '
+              'Ban nay la epoch TRUOC do.'.format(path, prev))
+        return prev
+    raise SystemExit('DUNG LAI: khong thay checkpoint nao tai {}'.format(path))
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
