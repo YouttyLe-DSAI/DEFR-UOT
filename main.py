@@ -24,6 +24,8 @@ import tqdm
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 import random
+import json
+import math
 
 seed = 1
 random.seed(seed)  
@@ -143,6 +145,14 @@ def main(set, args):
         print('Cross-corpus evaluation on: ' + test_annotation_file_path)
         with open(log_txt_path, 'a') as f:
             f.write('test_annotation=' + test_annotation_file_path + '\n')
+
+    metrics_path = os.path.join(os.path.dirname(log_txt_path), 'metrics.json')
+    metrics = {'config': {k: (v if isinstance(v, (int, float, str, bool, type(None))) else str(v))
+                          for k, v in vars(args).items()},
+               'dataset': args.dataset, 'fold': data_set,
+               'train_annotation': train_annotation_file_path,
+               'test_annotation': test_annotation_file_path,
+               'epochs_log': [], 'final': {}}
 
     best_acc = 0
     recorder = RecorderMeter(args.epochs)
@@ -328,6 +338,13 @@ def main(set, args):
         recorder.update(epoch, train_los, train_acc, val_los, val_acc)
         recorder.plot_curve(log_curve_path)
 
+        metrics['epochs_log'].append({
+            'epoch': epoch, 'lr': current_learning_rate_0,
+            'train_loss': float(train_los), 'train_acc': float(train_acc),
+            'val_loss': float(val_los), 'val_acc': float(val_acc),
+            'best_acc': float(best_acc), 'epoch_seconds': epoch_time})
+        save_metrics(metrics, metrics_path)
+
         print('The best accuracy: {:.3f}'.format(best_acc.item()))
         print('An epoch time: {:.2f}s'.format(epoch_time))
         with open(log_txt_path, 'a') as f:
@@ -335,11 +352,31 @@ def main(set, args):
             f.write('An epoch time: ' + str(epoch_time) + 's' + '\n')
 
     if args.use_uot:
-        report_uot_gates(model, log_txt_path)
+        metrics['final']['uot_gates'] = report_uot_gates(model, log_txt_path)
 
-    last_uar, last_war = computer_uar_war(val_loader, model, checkpoint_path, log_confusion_matrix_path, log_txt_path, data_set, args.class_names)
-  
+    last_uar, last_war, per_class = computer_uar_war(val_loader, model, checkpoint_path, log_confusion_matrix_path, log_txt_path, data_set, args.class_names)
+
+    metrics['final'].update({
+        'uar': float(last_uar), 'war': float(last_war),
+        'per_class_recall': [float(x) for x in per_class],
+        'class_names': list(args.class_names[:len(per_class)]),
+        'best_val_acc': float(best_acc),
+        'total_epochs_run': len(metrics['epochs_log'])})
+    save_metrics(metrics, metrics_path)
+    print('metrics written to ' + metrics_path)
+
     return last_uar, last_war
+
+
+def save_metrics(metrics, path):
+    """Structured log beside log.txt.
+
+    log.txt is for reading; this is for parsing. Regexing a human-readable log
+    breaks whenever a print statement changes, and the report table has to come
+    from somewhere reliable.
+    """
+    with open(path, 'w') as f:
+        json.dump(metrics, f, indent=2)
 
 
 def report_uot_gates(model, log_txt_path):
@@ -354,9 +391,8 @@ def report_uot_gates(model, log_txt_path):
     gates = {n: float(p) for n, p in model.named_parameters()
              if 'uot_fusion' in n and 'gate' in n}
     if not gates:
-        return
+        return None
 
-    import math
     vals = list(gates.values())
     a2v = [v for n, v in gates.items() if 'a2v' in n]
     v2a = [v for n, v in gates.items() if 'v2a' in n]
@@ -378,6 +414,11 @@ def report_uot_gates(model, log_txt_path):
     print('\n'.join(lines))
     with open(log_txt_path, 'a') as f:
         f.write('\n'.join(lines) + '\n')
+    return {'mean_abs': sum(abs(v) for v in vals) / len(vals),
+            'max_abs': max(abs(v) for v in vals),
+            'tanh_a2v_mean': sum(math.tanh(v) for v in a2v) / len(a2v),
+            'tanh_v2a_mean': sum(math.tanh(v) for v in v2a) / len(v2a),
+            'values': gates}
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args, log_txt_path):
@@ -683,7 +724,7 @@ def computer_uar_war(val_loader, model, checkpoint_path, log_confusion_matrix_pa
         f.write('WAR: {:.2f}'.format(war) + '\n')
         f.write('************************' + '\n')
     
-    return uar, war
+    return uar, war, list_diag
 
 
 if __name__ == '__main__':
