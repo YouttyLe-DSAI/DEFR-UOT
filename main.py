@@ -75,6 +75,11 @@ def parse_args():
                              "'./annotation/MAFW_set_{fold}_test_faces7.txt'. {fold} is "
                              'expanded per fold. The label spaces must line up: DFEW 7 '
                              "classes == MAFW's first 7, same order.")
+    parser.add_argument('--resume-training', type=str, default=None,
+                        help='continue an interrupted run: restores weights, optimizer, '
+                             'LR schedule and epoch counter from a checkpoint written by '
+                             'this script. {fold} is expanded. Different from --resume, '
+                             'which loads weights only.')
     parser.add_argument('--resume', type=str, default=None,
                         help="warm-start from a trained checkpoint, e.g. the authors' "
                              "release. May contain {fold}, expanded per fold. Weights only "
@@ -262,7 +267,32 @@ def main(set, args):
                                              num_workers=args.workers,
                                              pin_memory=True)
 
-    for epoch in range(0, args.epochs):
+    start_epoch = 0
+    if args.resume_training:
+        # Full restore, unlike --resume which takes weights only. Needed when a
+        # session dies partway: without the optimizer and the cosine schedule the
+        # run would restart its learning-rate cycle and stop being the same
+        # experiment.
+        rt = args.resume_training.format(fold=data_set)
+        ck = torch.load(rt, map_location='cpu', weights_only=False)
+        model.load_state_dict(ck['state_dict'])
+        optimizer.load_state_dict(ck['optimizer'])
+        if 'scheduler' in ck:
+            scheduler.load_state_dict(ck['scheduler'])
+        else:
+            for _ in range(ck['epoch']):
+                scheduler.step()
+        start_epoch = ck['epoch']
+        best_acc = ck.get('best_acc', 0)
+        if 'recorder' in ck:
+            recorder = ck['recorder']
+        print('Resumed TRAINING from {} at epoch {}/{}'.format(rt, start_epoch, args.epochs))
+        with open(log_txt_path, 'a') as f:
+            f.write('resumed_training_from={} epoch={}\n'.format(rt, start_epoch))
+        if start_epoch >= args.epochs:
+            print('  already finished -- nothing to do')
+
+    for epoch in range(start_epoch, args.epochs):
 
         inf = '********************' + str(epoch) + '********************'
         start_time = time.time()
@@ -286,6 +316,7 @@ def main(set, args):
         is_best = val_acc > best_acc
         best_acc = max(val_acc, best_acc)
         save_checkpoint({'epoch': epoch + 1,
+                         'scheduler': scheduler.state_dict(),
                          'state_dict': model.state_dict(),
                          'best_acc': best_acc,
                          'optimizer': optimizer.state_dict(),
@@ -428,7 +459,16 @@ def validate(val_loader, model, criterion, args, log_txt_path):
 
 
 def save_checkpoint(state, is_best, checkpoint_path):
+    """Write the latest epoch, and keep a copy of the best one beside it.
+
+    The original ignored is_best and overwrote a single file, so the best model
+    was gone the moment a later epoch did worse -- and a long run that ends on a
+    bad epoch reports that epoch. model.pth stays the resume point; the reported
+    figures can come from either, as long as both arms use the same rule.
+    """
     torch.save(state, checkpoint_path)
+    if is_best:
+        torch.save(state, checkpoint_path.replace('model.pth', 'model_best.pth'))
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""

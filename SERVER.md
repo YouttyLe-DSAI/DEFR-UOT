@@ -247,7 +247,36 @@ python tools/smoke_test.py --dataset MAFW --num-classes 7 \
     --train-annotation ./annotation/MAFW_set_{fold}_train_faces7.txt --use-uot --batch-size 2
 ```
 
-### 9.5. Ngân sách
+### 9.5. Checkpoint và chạy tiếp khi bị ngắt
+
+Mỗi epoch ghi hai file vào `log/<run>/checkpoint/`:
+
+| | |
+|---|---|
+| `model.pth` | epoch mới nhất — dùng để **chạy tiếp** |
+| `model_best.pth` | epoch có val accuracy cao nhất |
+
+Trước đây chỉ có `model.pth` và nó bị ghi đè mỗi epoch, nên bản tốt nhất mất ngay khi
+một epoch sau tệ hơn. Giờ giữ cả hai.
+
+Bị ngắt giữa chừng thì chạy tiếp bằng `--resume-training` (khác `--resume`: nó khôi phục
+**đầy đủ** trọng số + optimizer + lịch learning rate + bộ đếm epoch):
+
+```bash
+python main.py $COMMON --exper-name AB_UOT_mafw7_scratch \
+    --resume-training "log/<run-cu>/checkpoint/model.pth"
+```
+
+Khôi phục lịch LR là bắt buộc, không phải tuỳ chọn: `CosineAnnealingLR` giảm lr theo
+đường cosine suốt 25 epoch. Nếu chỉ nạp trọng số rồi chạy lại, lr quay về đầu chu kỳ và
+đó không còn là thí nghiệm ban đầu nữa. Đã kiểm chứng dãy lr của "chạy liền 25 epoch"
+trùng khớp từng giá trị với "ngắt ở epoch 10 rồi resume".
+
+**Báo cáo con số nào?** `computer_uar_war` ở cuối dùng `model.pth`, tức **epoch cuối**.
+Muốn báo theo epoch tốt nhất thì đánh giá `model_best.pth` bằng `evaluate.py` — miễn là
+**áp dụng cùng quy tắc cho cả hai nhánh**.
+
+### 9.6. Ngân sách
 
 | Tốc độ train | 1 epoch | 25 epoch / nhánh | Cả hai nhánh |
 |---|---|---|---|
