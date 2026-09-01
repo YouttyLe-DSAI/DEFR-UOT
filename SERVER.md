@@ -247,6 +247,60 @@ python tools/smoke_test.py --dataset MAFW --num-classes 7 \
     --train-annotation ./annotation/MAFW_set_{fold}_train_faces7.txt --use-uot --batch-size 2
 ```
 
+### 9.4b. Tăng tốc: nghẽn nằm ở dataloader, không phải GPU
+
+Đo được trên Kaggle T4: train **4,32 clip/s** ≈ eval **4,12 clip/s**, dù train làm thêm
+backward (~3× tính toán). GPU đang ngồi chờ CPU nạp dữ liệu — GPU mạnh hơn không giúp gì
+nếu không sửa chỗ này.
+
+Đo chi phí từng phần mỗi clip (16 frame, một worker):
+
+| | |
+|---|---|
+| `glob` liệt kê thư mục | 0,1 ms |
+| `kaldi.fbank` | 5,4 ms — chỉ **2%**, không phải thủ phạm |
+| mở + decode 16 JPEG **224px** | 9,4 ms |
+| mở + decode + resize 16 JPEG **400px** | 54 ms |
+| mở + decode + resize 16 JPEG **600px** | 115 ms |
+
+| Kích thước ảnh nguồn | clip/s mỗi worker |
+|---|---|
+| 224×224 | **104** |
+| 400×400 | 18 |
+| 600×600 | 8,7 |
+
+**MAFW của nhóm lưu ở độ phân giải gốc**, nên mỗi epoch phải decode ảnh lớn rồi thu về
+224 — làm lại y hệt ~757.000 lần cho một lượt 5 fold.
+
+#### Cách sửa: resize sẵn một lần
+
+```bash
+python tools/resize_frames.py --src $DATA/tree/mfaw/clips_faces \
+    --dst $DATA/tree224/mfaw/clips_faces --size 224 --jobs $(nproc)
+
+python tools/retarget_annotations.py --dataset MAFW \
+    --new-root $DATA/tree224/mfaw/clips_faces --recount
+```
+
+Cấu trúc `mfaw/clips_faces` phải giữ nguyên để logic đường dẫn audio của loader còn chạy.
+
+Hai lý do việc này an toàn:
+
+- **DFEW vốn đã ở 224** (`clip_224x224`). Đây chỉ là đưa MAFW về cùng chuẩn.
+- Nhóm **đã đo** 256px so với độ phân giải gốc: `t = −0,69`, không phân biệt được với 0.
+  Resize không ảnh hưởng độ chính xác, chỉ ảnh hưởng tốc độ.
+
+Đo trên dữ liệu thử: dung lượng giảm **7,8×**, kéo theo IO giảm tương ứng.
+
+#### Các nút còn lại
+
+| Nút | Tác dụng |
+|---|---|
+| `--workers` = `nproc − 2` | mạnh nhất sau việc resize |
+| `--batch-size` lớn nhất VRAM chịu | nhớ nâng `lr` theo (`4→8` thì `1e-4→1.4e-4`) |
+| Dữ liệu trên **NVMe cục bộ**, không phải NFS | mỗi clip mở 16 file |
+| Nhiều GPU: chạy **song song từng fold**, mỗi fold một GPU | tốt hơn `DataParallel` — mỗi tiến trình có worker riêng |
+
 ### 9.5. Checkpoint và chạy tiếp khi bị ngắt
 
 Mỗi epoch ghi hai file vào `log/<run>/checkpoint/`:
