@@ -94,6 +94,33 @@ pip install tensorboard                         # chi can neu dung TB=1
 export PATH=<duong-dan-venv>/bin:$PATH          # vi du .venv310/bin
 ```
 
+### Không có root, không cài được git
+
+Cổng git chỉ bảo đảm **một** điều: hai máy chạy đúng cùng một mã nguồn. Có ba
+cách, theo thứ tự ưu tiên:
+
+```bash
+# 1. co root
+sudo apt install -y git
+
+# 2. khong co root — cai git that vao ./.tools/ bang micromamba (~150 MB),
+#    khong ra ngoai project, xoa la sach. SHA that vao log.
+
+# 3. chay ngay, khong can git
+ALLOW_NO_GIT=1 ./run_ablation.sh 1 2
+```
+
+Cách 3 **không phải hạ chuẩn**: nó băm nội dung *và tên* của mọi file `.py` rồi
+dùng con số đó thay SHA. Bảo đảm đúng điều cần bảo đảm — thậm chí băm nội dung
+thật chứ không tin vào commit. Cái mất là lịch sử, không phải tính toàn vẹn.
+
+**Nhưng phải tự đối chiếu**: script in `HAI MAY PHAI CO CUNG CON SO NAY: <bam>`.
+Hai máy ra hai số khác nhau là đang chạy hai bản mã khác nhau. Với git thì việc
+đối chiếu này tự động; không có git thì bạn phải nhìn.
+
+Không tự động rơi về cách 3 — phải bật `ALLOW_NO_GIT=1` tường minh. Rơi về âm
+thầm chính là cái bẫy mà cổng này sinh ra để tránh.
+
 `run_ablation.sh` giờ **dừng hẳn** nếu thiếu bất kỳ thứ nào, kèm lệnh sửa. Trước
 đó nó **bỏ qua im lặng**: cổng kiểm tra viết `$(git status ... 2>/dev/null)`, git
 không có thì lệnh hỏng, stderr bị nuốt, chuỗi rỗng, `-n ""` sai → **cho qua**.

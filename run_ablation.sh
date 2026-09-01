@@ -69,7 +69,6 @@ need() {
         exit 1
     }
 }
-need git    "sudo apt update && sudo apt install -y git"
 need python "PATH phai uu tien venv, vi du: export PATH=\$PWD/.venv310/bin:\$PATH"
 
 # python phai la python CUA VENV, khong phai python he thong. Kiem bang thu that
@@ -109,23 +108,82 @@ echo "  verify_seed  DAT  (4 nhanh cung luong du lieu)"
 python tools/verify_attn.py > /dev/null || { echo "HONG: verify_attn"; exit 1; }
 echo "  verify_attn  DAT  (4 nhanh chi khac cach bien chi phi thanh trong so)"
 
-# Ma nguon phai sach: hai may PHAI chay dung cung mot thu. Khong `2>/dev/null`
-# o day -- loi cua git can duoc nhin thay.
-DIRTY=$(git status --porcelain -- '*.py')
-if [ -n "$DIRTY" ]; then
-    echo "DUNG LAI: co thay doi .py chua commit. Hai may phai cung mot SHA."
-    echo "$DIRTY"
+# --- Xuat xu: hai may PHAI chay dung cung mot ma nguon ---
+#
+# Do la dieu duy nhat cong nay can bao dam. Git SHA la cach goi gon nhat, nhung
+# tren may lab khong co root thi khong cai duoc git, va lam ca thi nghiem dung
+# lai vi mot cong cu ghi so la sai uu tien.
+#
+# Duong thoat: bam noi dung cac file nguon. No bao dam DUNG dieu can bao dam --
+# tham chi chat hon SHA, vi bam noi dung THAT chu khong tin vao commit. Doi lai
+# no khong biet gi ve lich su, nen chi dung khi that su khong co git.
+#
+# Khong tu dong roi ve bam: phai bat ALLOW_NO_GIT=1 tuong minh. Roi ve am tham
+# la dung cai bay ma cong nay sinh ra de tranh.
+# Bam CA TEN LAN NOI DUNG cua moi file .py, roi bam lai danh sach do. Bam rieng
+# noi dung thoi thi doi ten hay di chuyen file se khong lam doi bam.
+#
+# PHAI ghim SHA-256 cho ca hai cong cu: `shasum` mac dinh la SHA-1 con
+# `sha256sum` la SHA-256, nen hai may dung hai cong cu khac nhau se ra hai con
+# so khac nhau tren CUNG mot ma nguon -- pha huy dung muc dich cua viec nay.
+#
+# Loai ./log/: main.py sao chep ma nguon vao log/<run>/code/ moi lan chay, nen
+# khong loai thi bam doi sau run dau tien.
+bam_nguon() {
+    local h
+    if command -v sha256sum > /dev/null 2>&1; then
+        h="sha256sum"
+    elif command -v shasum > /dev/null 2>&1; then
+        h="shasum -a 256"
+    else
+        return 1
+    fi
+    find . -name '*.py' \
+        -not -path './.git/*' -not -path './log/*' -not -path '*/__pycache__/*' \
+        -print0 | sort -z | xargs -0 $h | $h | cut -c1-12
+}
+
+if command -v git > /dev/null 2>&1; then
+    # Khong `2>/dev/null` o day -- loi cua git can duoc nhin thay.
+    DIRTY=$(git status --porcelain -- '*.py')
+    if [ -n "$DIRTY" ]; then
+        echo "DUNG LAI: co thay doi .py chua commit. Hai may phai cung mot SHA."
+        echo "$DIRTY"
+        exit 1
+    fi
+    SHA=$(git rev-parse --short HEAD)
+    [ -n "$SHA" ] || { echo "DUNG LAI: khong doc duoc git SHA"; exit 1; }
+    XUAT_XU="git=$SHA"
+elif [ "${ALLOW_NO_GIT:-0}" = "1" ]; then
+    # `exit 1` ben trong $(...) chi thoat SUBSHELL, script van chay tiep voi SHA
+    # rong -- nen bam_nguon tra ve ma loi va kiem o day, ngoai subshell.
+    SHA=$(bam_nguon) || {
+        echo "DUNG LAI: khong co ca sha256sum lan shasum, khong bam duoc ma nguon."
+        exit 1
+    }
+    [ -n "$SHA" ] || { echo "DUNG LAI: bam ma nguon ra rong"; exit 1; }
+    XUAT_XU="bam_nguon=$SHA"
+    echo "  KHONG co git -- dung bam noi dung file .py thay cho SHA."
+    echo "  HAI MAY PHAI CO CUNG CON SO NAY: $SHA"
+    echo "  Khac nhau la hai may dang chay hai ban ma khac nhau."
+else
+    echo "DUNG LAI: khong co git."
+    echo "  Git dung de chung minh hai may chay cung mot ma nguon."
+    echo "  Ba cach, theo thu tu uu tien:"
+    echo "    1. sudo apt update && sudo apt install -y git"
+    echo "    2. khong co root: cai git vao ./.tools/ (micromamba, ~150 MB)"
+    echo "    3. ALLOW_NO_GIT=1 $0 $FOLDS"
+    echo "       -> dung bam noi dung .py thay SHA. Bao dam dung dieu can bao"
+    echo "          dam, chi la khong co lich su. Doi chieu con so giua hai may."
     exit 1
 fi
-SHA=$(git rev-parse --short HEAD)
-[ -n "$SHA" ] || { echo "DUNG LAI: khong doc duoc git SHA"; exit 1; }
 
 GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | tr ' ' '_')
 echo "  SHA $SHA   GPU $GPU   workers $WORKERS"
 
 # Ghi lai xuat xu ra dia. stdout cua tmux se troi mat; file thi con.
 {
-    echo "sha=$SHA"
+    echo "xuat_xu=$XUAT_XU"       # git=<sha>  hoac  bam_nguon=<bam>
     echo "gpu=$GPU"
     echo "python=$PY_PATH"
     echo "folds=$FOLDS"
