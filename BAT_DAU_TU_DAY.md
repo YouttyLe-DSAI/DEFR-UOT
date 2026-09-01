@@ -86,6 +86,37 @@ máy — đó là hai bản mã khác nhau.
 
 ---
 
+## 2b. Cần có sẵn trên máy — kiểm ngày 01/09, thiếu cả ba
+
+```bash
+sudo apt update && sudo apt install -y git      # KHONG co san tren anh
+pip install tensorboard                         # chi can neu dung TB=1
+export PATH=<duong-dan-venv>/bin:$PATH          # vi du .venv310/bin
+```
+
+`run_ablation.sh` giờ **dừng hẳn** nếu thiếu bất kỳ thứ nào, kèm lệnh sửa. Trước
+đó nó **bỏ qua im lặng**: cổng kiểm tra viết `$(git status ... 2>/dev/null)`, git
+không có thì lệnh hỏng, stderr bị nuốt, chuỗi rỗng, `-n ""` sai → **cho qua**.
+Đúng loại lỗi fail-open mà đợt rà soát đi tìm, nằm ngay trong cổng chống lỗi.
+
+Ba chỗ khác cũng đã đổi sang fail-closed:
+
+| kiểm | thiếu thì |
+|---|---|
+| `python` nạp được `torch` + `timm` | dừng, và nói rõ nhiều khả năng đang dùng python hệ thống |
+| `tensorboard` khi `TB=1` | dừng (bật cờ mà thiếu gói là lỗi cấu hình, không phải chuyện bỏ qua) |
+| `wandb` khi `WANDB=1` | dừng |
+| đếm số CPU | dừng, yêu cầu `WORKERS=12 ./run_ablation.sh ...` |
+
+Cái cuối cũng từng fail-open: `$(( $(nproc) - 2 ))` khi `nproc` hỏng ra `-2`, rồi
+dòng sau nâng lên `2` — tụt từ 14 worker xuống 2 mà không báo gì. Trên workload
+nghẽn dataloader đó là mất gần hết thông lượng.
+
+Xuất xứ mỗi lần chạy được ghi vào `RUN_MANIFEST.txt`: SHA, GPU, đường dẫn python,
+fold, độ phân giải, giờ bắt đầu. stdout của `tmux` sẽ trôi mất, file thì còn.
+
+---
+
 ## 3. Phải chạy trước, chưa ai chạy
 
 Ba việc này **chưa làm được trên máy Mac** (thiếu backbone và `timm`):
