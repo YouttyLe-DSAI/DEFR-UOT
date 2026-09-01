@@ -10,5 +10,12 @@ logs/
 runs/
 checkpoints/
 *.log
+
+# main.py ghi vao ./log/ (so it, khong phai ./logs/) -- khong co dong nay thi sau
+# vai run `git status` day file la, va mot `git add -A` co the commit nham.
+log/
+RUN_MANIFEST.txt
+wandb/
+*.pth.tmp
 .vscode/
 .idea/
