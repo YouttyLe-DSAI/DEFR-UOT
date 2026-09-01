@@ -17,7 +17,7 @@ của cùng một thứ.
 | Ghép cặp gì | 16 frame ↔ 32 lát audio, trong 1 clip | mẫu DFEW ↔ mẫu MAFW, giữa 2 corpus |
 | Cost matrix | audio vs visual, **khác metric space** | cùng encoder, **cùng space** |
 | Cần train | có, 15–19 giờ GPU | **không** |
-| Tài liệu | `UOT_INTEGRATION.md`, `UOT_CODE_WALKTHROUGH.md` | `uot_crosscorpus/README.md` |
+| Tài liệu | `UOT_INTEGRATION.md`, `UOT_ARCHITECTURE.md` | `uot_crosscorpus/README.md` |
 
 **Hướng B là hướng đang theo đuổi.** Hướng A giữ lại theo yêu cầu, chưa xoá.
 
