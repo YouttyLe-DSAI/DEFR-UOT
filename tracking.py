@@ -89,13 +89,33 @@ class Tracker:
                 pass
 
     def gates(self, ep, values):
-        """Gia tri gate cua 12 khoi UOT. Khoi tao 0; neu sau 25 epoch van ~0 thi
-        model da hoc cach BO QUA nhanh UOT -- ket qua se trung baseline va do la
-        thong tin, khong phai loi."""
+        """Gate cua 12 khoi UOT, kem gradient dang nam tren chung.
+
+        Gate khoi tao 0. Van ~0 sau 25 epoch nghia la model da hoc cach BO QUA
+        nhanh UOT -- run do trung voi baseline. Hai chi so tach bach hai nguyen
+        nhan, va chung doi hoi phan ung nguoc nhau:
+
+          gate/abs_mean ~ 0  VA  gate/grad_abs_mean ~ 0
+              -> dau ra nhanh UOT khong giup gi cho loss. Optimizer tu choi dung
+                 no, va do la KET QUA, khong phai loi.
+
+          gate/abs_mean ~ 0  NHUNG  gate/grad_abs_mean > 0
+              -> co tin hieu ma tham so khong di theo. Van de toi uu; luc do
+                 tang lr rieng cho gate hoac khoi tao khac 0 la dang thu, vi ket
+                 qua am tinh se la nguy tao.
+        """
         if not values:
             return
-        flat = {f'gate/{k}': v for k, v in values.items()}
-        flat['gate/abs_mean'] = sum(abs(v) for v in values.values()) / len(values)
+        gia_tri = {k: v for k, v in values.items() if not k.startswith('grad_')}
+        grad = {k[5:]: v for k, v in values.items() if k.startswith('grad_')}
+
+        flat = {f'gate/{k}': v for k, v in gia_tri.items()}
+        flat.update({f'gate_grad/{k}': v for k, v in grad.items()})
+        if gia_tri:
+            flat['gate/abs_mean'] = sum(abs(v) for v in gia_tri.values()) / len(gia_tri)
+            flat['gate/abs_max'] = max(abs(v) for v in gia_tri.values())
+        if grad:
+            flat['gate/grad_abs_mean'] = sum(abs(v) for v in grad.values()) / len(grad)
         self.epoch(ep, **flat)
 
     def final(self, uar, war, recall=None):

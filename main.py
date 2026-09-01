@@ -298,7 +298,29 @@ def main(set, args):
     criterion = nn.CrossEntropyLoss().cuda()
     
     # define optimizer
-    optimizer = torch.optim.AdamW(params=model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # Gate cua UOT khong chiu weight decay. Chung khoi tao 0 va phai di ra xa 0
+    # de nhanh UOT co tac dung, nen weight decay la mot luc keo nguoc chieu voi
+    # dung co che dang duoc do. Anh huong dinh luong nho -- lr trung binh theo
+    # cosine ~5e-5, wd 1e-2, qua 29.225 buoc chi co lai ~1,5% -- nhung no la
+    # thien lech mot chieu chong lai gia thuyet, va bo di khong ton gi.
+    #
+    # Chi ap cho gate. Moi tham so khac giu nguyen wd=1e-2 dung nhu paper, nen
+    # nhanh baseline khong doi mot chut nao.
+    gate_params = [p for n, p in model.named_parameters()
+                   if 'uot_fusion' in n and 'gate' in n and p.requires_grad]
+    gate_ids = {id(p) for p in gate_params}
+    other_params = [p for p in model.parameters()
+                    if p.requires_grad and id(p) not in gate_ids]
+    if gate_params:
+        optimizer = torch.optim.AdamW(
+            [{'params': other_params, 'weight_decay': args.weight_decay},
+             {'params': gate_params, 'weight_decay': 0.0}],
+            lr=args.lr)
+        print('optimizer: {} tham so thuong (wd={}), {} gate (wd=0)'.format(
+            len(other_params), args.weight_decay, len(gate_params)))
+    else:
+        optimizer = torch.optim.AdamW(params=model.parameters(), lr=args.lr,
+                                      weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs) 
     cudnn.benchmark = True
 
@@ -461,7 +483,28 @@ def main(set, args):
                       val_acc=float(val_acc), val_loss=float(val_los),
                       lr=current_learning_rate_0, epoch_time=epoch_time)
         if args.use_uot:
-            tracker.gates(epoch, uot_gate_values(model))
+            g = uot_gate_values(model)
+            tracker.gates(epoch, g)
+            # Canh bao som, KHONG tu dung. Quyet dinh dung hay chay tiep la cua
+            # nguoi, vi ca hai ket cuc deu co the la ket qua dang bao cao.
+            if epoch == 4:
+                vals = [abs(v) for k, v in g.items() if not k.startswith('grad_')]
+                grads = [abs(v) for k, v in g.items() if k.startswith('grad_')]
+                gm = sum(vals) / len(vals) if vals else 0.0
+                gg = sum(grads) / len(grads) if grads else None
+                if gm < 1e-3:
+                    msg = ('CANH BAO epoch 5: |gate| trung binh = {:.2e}, van gan 0.\n'
+                           '  Nhanh UOT chua dong gop gi -- run nay dang do lai baseline.'
+                           .format(gm))
+                    if gg is not None:
+                        msg += ('\n  |grad| tren gate = {:.2e} -> {}'.format(
+                            gg, 'KHONG co tin hieu: optimizer tu choi dung nhanh nay, '
+                                'day la KET QUA' if gg < 1e-6 else
+                                'CO tin hieu ma gate khong di theo: van de TOI UU, '
+                                'can xem lai lr rieng cho gate hoac khoi tao khac 0'))
+                    print(msg)
+                    with open(log_txt_path, 'a') as f:
+                        f.write(msg + '\n')
 
     if args.use_uot:
         report_uot_gates(model, log_txt_path)
@@ -474,15 +517,34 @@ def main(set, args):
 
 
 def uot_gate_values(model):
-    """The raw gate scalars, for per-epoch tracking.
+    """The gate scalars AND the gradient sitting on them.
 
-    Watching these live is the cheapest early warning there is: if they are
-    still at zero by epoch 5, the run is measuring the baseline a second time
-    and there is no point spending the remaining 20 epochs on it.
+    Watching the values alone is the cheapest early warning there is -- still at
+    zero by epoch 5 and the run is measuring the baseline a second time. But the
+    value on its own cannot say WHY, and the two reasons call for opposite
+    responses:
+
+      grad ~ 0 too      the branch output does not help the loss. The optimiser
+                        is correctly declining to use it. That is a finding, and
+                        arguably the most interesting one available here: given
+                        a free choice, the model refuses transport-based fusion.
+
+      grad NOT ~ 0      a signal exists and the parameter is not following it.
+                        That is an optimisation problem -- and then a higher
+                        learning rate on the gates, or a non-zero init, is worth
+                        trying, because the negative result would be an artefact.
+
+    Call this AFTER backward() and BEFORE optimizer.zero_grad(), or the grads
+    read as None.
     """
-    return {n.split('uot_fusion.')[-1]: float(p)
-            for n, p in model.named_parameters()
-            if 'uot_fusion' in n and 'gate' in n}
+    out = {}
+    for n, p in model.named_parameters():
+        if 'uot_fusion' in n and 'gate' in n:
+            k = n.split('uot_fusion.')[-1]
+            out[k] = float(p)
+            if p.grad is not None:
+                out['grad_' + k] = float(p.grad)
+    return out
 
 
 def report_uot_gates(model, log_txt_path):
