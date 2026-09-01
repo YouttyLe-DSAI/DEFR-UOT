@@ -303,9 +303,50 @@ def main(set, args):
             f.write('The best accuracy: ' + str(best_acc.item()) + '\n')
             f.write('An epoch time: ' + str(epoch_time) + 's' + '\n')
 
+    if args.use_uot:
+        report_uot_gates(model, log_txt_path)
+
     last_uar, last_war = computer_uar_war(val_loader, model, checkpoint_path, log_confusion_matrix_path, log_txt_path, data_set, args.class_names)
   
     return last_uar, last_war
+
+
+def report_uot_gates(model, log_txt_path):
+    """How far the UOT gates moved off their zero initialisation.
+
+    Wiring the module in correctly is not the same as the module doing
+    anything. Both gates pass through tanh, so a value still at zero means the
+    branch contributed nothing and the run measured the baseline twice --
+    which is a result about the training budget, not about UOT, and the two
+    read identically in the accuracy numbers alone.
+    """
+    gates = {n: float(p) for n, p in model.named_parameters()
+             if 'uot_fusion' in n and 'gate' in n}
+    if not gates:
+        return
+
+    import math
+    vals = list(gates.values())
+    a2v = [v for n, v in gates.items() if 'a2v' in n]
+    v2a = [v for n, v in gates.items() if 'v2a' in n]
+    lines = [
+        '*** UOT gates after training ***',
+        '  {} gates   |g| mean {:.4f}   max {:.4f}'.format(
+            len(vals), sum(abs(v) for v in vals) / len(vals), max(abs(v) for v in vals)),
+        '  tanh(g), i.e. the fraction of its output the branch actually adds:',
+        '    a2v  mean {:+.4f}   min {:+.4f}   max {:+.4f}'.format(
+            sum(math.tanh(v) for v in a2v) / len(a2v),
+            min(math.tanh(v) for v in a2v), max(math.tanh(v) for v in a2v)),
+        '    v2a  mean {:+.4f}   min {:+.4f}   max {:+.4f}'.format(
+            sum(math.tanh(v) for v in v2a) / len(v2a),
+            min(math.tanh(v) for v in v2a), max(math.tanh(v) for v in v2a)),
+    ]
+    if max(abs(v) for v in vals) < 1e-3:
+        lines.append('  !! still at zero -- UOT contributed nothing; this run is the '
+                     'baseline again')
+    print('\n'.join(lines))
+    with open(log_txt_path, 'a') as f:
+        f.write('\n'.join(lines) + '\n')
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args, log_txt_path):

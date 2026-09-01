@@ -41,6 +41,9 @@ def parse_log(path):
     if war:
         out['war'] = float(war[-1])
 
+    m = re.search(r'\|g\| mean ([\d.]+)\s+max ([\d.]+)', txt)
+    out['gate_mean'], out['gate_max'] = (float(m.group(1)), float(m.group(2))) if m else (None, None)
+
     m = re.search(r'Confusion Matrix Diag:\s*\n(\[[^\]]*\])', txt)
     if m:
         try:
@@ -87,6 +90,10 @@ def show(tag, runs):
             print('    epoch time        : {:.1f} phut'.format(
                 sum(r['epoch_s']) / len(r['epoch_s']) / 60))
         print('    UAR {} | WAR {}'.format(r['uar'], r['war']))
+        if r['gate_max'] is not None:
+            note = '  <- van bang 0: UOT khong dong gop gi' if r['gate_max'] < 1e-3 else ''
+            print('    UOT gate |g| mean {:.4f} max {:.4f}{}'.format(
+                r['gate_mean'], r['gate_max'], note))
 
 
 def main():
