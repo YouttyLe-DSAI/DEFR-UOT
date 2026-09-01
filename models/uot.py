@@ -57,6 +57,34 @@ def unbalanced_sinkhorn_log(C, log_a=None, log_b=None, eps=0.05, tau=1.0, n_iter
     return log_pi.exp()
 
 
+def attention_plan(C, temp=0.05):
+    """Row-wise softmax over the same cost matrix — the control arm.
+
+    This exists to answer the ablation a reviewer will ask first: does the
+    *transport* structure do the work, or is it just the extra capacity of the
+    12 fusion modules? Everything else is held fixed — same cosine cost, same
+    LayerNorms, same projections, same zero-init gates, same insertion point.
+    Only the map from cost to weights changes: a one-sided softmax here, versus
+    two-sided Sinkhorn scaling in the OT arms. Softmax has no parameters, so the
+    two arms have an *identical* parameter count, not merely a comparable one.
+
+    Scaled by 1/N so total mass is 1 and every row carries exactly 1/N, matching
+    what balanced OT converges to. The row-mass modulation downstream therefore
+    becomes an exact no-op in this arm — which is the point: plain attention has
+    no mass signal to offer, only unbalanced OT does.
+
+    Args:
+        C: cost matrix, [B, N, M]
+        temp: softmax temperature. Pass the OT arm's `eps` so both arms share
+            one sharpness knob and cannot be tuned against each other.
+
+    Returns:
+        pi: [B, N, M], rows summing to 1/N, total mass exactly 1.
+    """
+    N = C.shape[1]
+    return torch.softmax(-C / temp, dim=2) / N
+
+
 class UOTFusion(nn.Module):
     """One UOT fusion step, meant to be instantiated once per transformer block.
 
@@ -68,8 +96,11 @@ class UOTFusion(nn.Module):
     """
 
     def __init__(self, dim=128, n_frames=16, n_image=196, n_audio_t=32, n_audio_f=8,
-                 eps=0.05, tau=1.0, n_iters=10, detach_plan=False, video_token='cls'):
+                 eps=0.05, tau=1.0, n_iters=10, detach_plan=False, video_token='cls',
+                 mode='uot'):
         super().__init__()
+        assert mode in ('uot', 'attn'), mode
+        self.mode = mode
         self.dim = dim
         self.n_frames = n_frames
         self.n_image = n_image
@@ -119,7 +150,13 @@ class UOTFusion(nn.Module):
         a_n = torch.nn.functional.normalize(self.norm_a(a), dim=-1)
 
         C = 1.0 - torch.bmm(v_n, a_n.transpose(1, 2))          # [n, t, n_audio_t]
-        pi = unbalanced_sinkhorn_log(C, eps=self.eps, tau=self.tau, n_iters=self.n_iters)
+        if self.mode == 'attn':
+            # Control arm: same cost, same everything downstream, only the
+            # cost-to-weights map differs. See attention_plan().
+            pi = attention_plan(C, temp=self.eps)
+        else:
+            pi = unbalanced_sinkhorn_log(C, eps=self.eps, tau=self.tau,
+                                         n_iters=self.n_iters)
         if self.detach_plan:
             pi = pi.detach()
 
@@ -133,8 +170,16 @@ class UOTFusion(nn.Module):
 
         # Rescale by relative matched mass: frames with no audio counterpart get
         # a smaller update instead of being forced to absorb something.
-        a2v = a2v * (row_mass * self.n_frames)
-        v2a = v2a * (col_mass * self.n_audio_t)
+        #
+        # The attn arm must NOT get this. attention_plan normalises rows, so
+        # row_mass is exactly 1/N there and the a2v rescale is already a no-op --
+        # but col_mass is unconstrained, and measured on this cost matrix it
+        # spans 0.0000 - 4.8134, a STRONGER mass modulation than the UOT arm it
+        # is supposed to control for (0.1181 - 1.1149). Leaving it in would hand
+        # the control arm the very mechanism the experiment is testing for.
+        if self.mode != 'attn':
+            a2v = a2v * (row_mass * self.n_frames)
+            v2a = v2a * (col_mass * self.n_audio_t)
 
         a2v = torch.tanh(self.gate_a2v) * self.proj_a2v(a2v)
         v2a = torch.tanh(self.gate_v2a) * self.proj_v2a(v2a)

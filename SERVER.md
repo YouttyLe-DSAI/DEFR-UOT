@@ -303,15 +303,21 @@ Hai lý do việc này an toàn:
 
 ### 9.5. Checkpoint và chạy tiếp khi bị ngắt
 
-Mỗi epoch ghi hai file vào `log/<run>/checkpoint/`:
+Mỗi epoch ghi **đúng một** file vào `log/<run>/checkpoint/`: `model.pth`, epoch mới
+nhất, vừa là điểm chạy tiếp vừa là bản được báo cáo.
 
-| | |
-|---|---|
-| `model.pth` | epoch mới nhất — dùng để **chạy tiếp** |
-| `model_best.pth` | epoch có val accuracy cao nhất |
+**Không còn `model_best.pth`** (bỏ 01/09). Lý do không phải tiết kiệm đĩa: repo này
+không có tập validation riêng — `val_loader` dựng từ **tập test**, nên `is_best` được
+chọn bằng cách nhìn vào tập test. Con số lấy từ file đó là giá trị lớn nhất qua 25 lần
+đo trên test, tức ước lượng lạc quan có thiên lệch. Và nó trái giao thức của paper
+(mục 4.2: *"report the result of final checkpoint, i.e., at 25th epoch"*).
 
-Trước đây chỉ có `model.pth` và nó bị ghi đè mỗi epoch, nên bản tốt nhất mất ngay khi
-một epoch sau tệ hơn. Giờ giữ cả hai.
+Đường cong và epoch tốt nhất vẫn nằm trong `log.txt` (`The best accuracy: ...`) để chẩn
+đoán độ ổn định — chỉ mất trọng số, không mất thông tin.
+
+Ghi **nguyên tử**: `model.pth.tmp` → `fsync` → `os.replace`. Vì giờ chỉ còn một điểm
+khôi phục duy nhất, mà nó bị ghi lại ~780 MB, 25 lần mỗi run, 20 run — 500 cơ hội cho
+mất điện hoặc hết đĩa rơi vào giữa lúc ghi. Ghi thẳng thì mất cả run.
 
 Bị ngắt giữa chừng thì chạy tiếp bằng `--resume-training` (khác `--resume`: nó khôi phục
 **đầy đủ** trọng số + optimizer + lịch learning rate + bộ đếm epoch):
@@ -327,8 +333,17 @@ Khôi phục lịch LR là bắt buộc, không phải tuỳ chọn: `CosineAnne
 trùng khớp từng giá trị với "ngắt ở epoch 10 rồi resume".
 
 **Báo cáo con số nào?** `computer_uar_war` ở cuối dùng `model.pth`, tức **epoch cuối**.
-Muốn báo theo epoch tốt nhất thì đánh giá `model_best.pth` bằng `evaluate.py` — miễn là
-**áp dụng cùng quy tắc cho cả hai nhánh**.
+Đó là con số duy nhất được báo cáo. **Không** dùng dòng `The best accuracy` trong
+log — nó chọn theo accuracy trên chính tập test.
+
+`--resume-training` giờ **đối chiếu `ck['args']`** với dòng lệnh trước khi nạp, và dừng
+hẳn nếu lệch. Cần thiết vì `uot_mode`/`uot_tau`/`uot_eps` là thuộc tính Python, không
+nằm trong `state_dict` — bốn nhánh có cùng tên và shape tham số nên nạp nhầm nhánh vẫn
+`load_state_dict` sạch 100%, không một khoá thiếu, rồi train tiếp thành checkpoint lai.
+
+Nó cũng chặn hai lỗi nữa: đường dẫn resume nhiều fold mà thiếu `{fold}` (`str.format`
+trên chuỗi không có `{fold}` trả về **nguyên chuỗi**, nên fold 4 và 5 sẽ nạp trọng số
+fold 3 — rò rỉ tập test), và checkpoint thuộc fold khác fold đang chạy.
 
 ### 9.6. Ngân sách
 

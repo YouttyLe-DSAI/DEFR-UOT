@@ -25,6 +25,12 @@ def parse_log(path):
         'epoch_s': [float(x) for x in re.findall(r'An epoch time: ([\d.]+)s', txt)],
         'resumed': bool(re.search(r'resumed_from=', txt)),
         'use_uot': bool(re.search(r'use_uot=True', txt)),
+        # use_uot=True dung cho CA BA nhanh attn / tau=1e6 / tau=1.0. Khong doc
+        # them hai truong nay thi cong cu khong phan biet duoc chung, va se dan
+        # nhan "UOT" cho mot run bat ky. main.py ghi ca vars(args) vao log nen
+        # chung co san.
+        'uot_mode': (re.search(r'^uot_mode=(\w+)', txt, re.M) or [None, None])[1],
+        'uot_tau': (re.search(r'^uot_tau=([\deE.+-]+)', txt, re.M) or [None, None])[1],
         'epochs': None, 'lr': None, 'uar': None, 'war': None, 'recall': None,
     }
     m = re.search(r'^epochs=(\d+)', txt, re.M)
@@ -116,10 +122,30 @@ def main():
         print('\n  ({} run bo do khong co dong UAR -- bo qua, dung run da chay xong)'
               .format(n_partial))
 
-    a, b = base[0][1], uot[0][1]
-    if a['uar'] is None or b['uar'] is None:
-        print('\nMot trong hai run chua chay xong (chua co dong UAR trong log.txt).')
+    # Ghep cap theo FOLD. Ten thu muc la <DS>-<YYmmddHHMM><exper_name>-set<N>-log,
+    # nen sorted() xep theo TIMESTAMP truoc, so fold sau. Lay [0] cua moi ben la
+    # lay run som nhat -- chay 5 fold trong mot lenh thi tinh co dung ca hai la
+    # fold 1, nhung chay tach phien (dung --folds, dung nhu SERVER.md khuyen) thi
+    # se tru hai FOLD KHAC NHAU va in ra "dong gop cua UOT" ma khong he bao gi.
+    def fold_of(path):
+        m = re.search(r'-set(\d+)-log', os.path.basename(path))
+        return int(m.group(1)) if m else None
+
+    base_by_fold = {fold_of(d): r for d, r in base if r['uar'] is not None}
+    uot_by_fold = {fold_of(d): r for d, r in uot if r['uar'] is not None}
+    chung = sorted(f for f in base_by_fold if f in uot_by_fold and f is not None)
+    if not chung:
+        print('\nKhong co fold nao chay xong o CA HAI nhanh -- khong the so.')
+        print('  baseline co fold: {}'.format(sorted(k for k in base_by_fold if k)))
+        print('  nhanh kia co fold: {}'.format(sorted(k for k in uot_by_fold if k)))
         return
+    if len(chung) > 1:
+        print('\nCo {} fold chung: {}. So tren fold {} (nho nhat).'
+              .format(len(chung), chung, chung[0]))
+    fold = chung[0]
+    a, b = base_by_fold[fold], uot_by_fold[fold]
+    print('\nSo tren FOLD {}   |   nhanh B: uot_mode={} uot_tau={}'
+          .format(fold, b['uot_mode'], b['uot_tau']))
 
     print('\n' + '=' * 58)
     print('  {:<12} {:>10} {:>10}'.format('', 'UAR', 'WAR'))

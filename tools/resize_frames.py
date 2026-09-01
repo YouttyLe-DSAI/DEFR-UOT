@@ -10,7 +10,11 @@ DFEW already ships at 224 (clip_224x224), so this only brings MAFW in line, and
 the team measured 256px against original resolution at t = -0.69, i.e. no
 detectable difference in accuracy.
 
-Writes a new tree; the source is left alone. Re-running skips what exists.
+Writes a new tree; the source is left alone. Re-running skips clips that are
+already complete; a clip that failed part-way is deleted rather than left short,
+so re-running redoes it from scratch. A truncated clip directory is the dangerous
+case: nothing downstream can tell it apart from a short video, and --recount would
+bless the wrong frame count.
 
   python tools/resize_frames.py --src /data/tree/mfaw/clips_faces \
       --dst /data/tree224/mfaw/clips_faces --size 224 --jobs 16
@@ -18,6 +22,7 @@ Writes a new tree; the source is left alone. Re-running skips what exists.
 
 import argparse
 import os
+import shutil
 import sys
 from multiprocessing import Pool
 
@@ -44,7 +49,15 @@ def resize_clip(job):
                     out, quality=quality)
             n_done += 1
         except Exception as exc:
-            return (src_dir, n_done, n_skip, str(exc))
+            # Bao gio cung PHAI xoa thu muc dich khi hong. Truoc day cho nay
+            # `return`, tuc thoat ca clip ngay tu anh loi dau tien va de lai mot
+            # thu muc CAT NGAN. Dong 38 `if os.path.exists(out): continue` khien
+            # chay lai khong tu chua duoc, nen no ton tai vinh vien; roi
+            # retarget_annotations.py --recount ghi lai dung so frame bi cat, va
+            # check_data.py bao "frame count off: 0". Clip do vinh vien chi duoc
+            # lay mau o phan dau video, khong mot canh bao nao.
+            shutil.rmtree(dst_dir, ignore_errors=True)
+            return (src_dir, 0, 0, str(exc))
     return (src_dir, n_done, n_skip, None)
 
 
@@ -93,6 +106,14 @@ def main():
     src_gb, dst_gb = dir_size(args.src) / 1e9, dir_size(args.dst) / 1e9
     print('dung luong: {:.1f} GB -> {:.1f} GB  ({:.1f}x nho hon)'.format(
         src_gb, dst_gb, src_gb / dst_gb if dst_gb else 0))
+    if failed:
+        # Thoat khac 0 de khong ai chay tiep buoc retarget tren mot cay thieu clip.
+        # Cac clip loi da bi xoa han khoi cay dich, nen annexation con tro toi
+        # thu muc KHONG ton tai -> dataloader se no ngay, nhin thay duoc. Do la
+        # chu y: thieu on con hon cat ngan im lang.
+        sys.exit('\nDUNG LAI: {} clip loi, da xoa khoi cay dich. Sua nguyen nhan roi '
+                 'chay lai lenh nay truoc khi retarget.'.format(failed))
+
     print('\nTro annotation sang cay moi:')
     print('  python tools/retarget_annotations.py --dataset MAFW --new-root {} --recount'
           .format(args.dst))

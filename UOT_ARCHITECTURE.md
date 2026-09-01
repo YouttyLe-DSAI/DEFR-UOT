@@ -191,10 +191,34 @@ Muốn trung thành hơn thì `--uot-iters 50` kèm `--uot-detach`.
 | UOT mạnh/yếu lúc bắt đầu | init của `gate_*` |
 | UOT cộng thêm hay **thay thế** mean-pool | `Generate_Model.forward` |
 
-### Ablation tối thiểu
+### Ablation bốn nhánh (chốt 01/09)
 
-`{baseline, τ=1e6, τ=1.0, τ=0.1}` trên cùng fold. Nếu `τ=1e6` ≈ `τ=1.0` thì tính
-"unbalanced" không đóng góp gì — và phải nói thẳng điều đó.
+```bash
+                                                    # 1. baseline: không cờ UOT
+--use-uot --uot-mode attn                           # 2. attention
+--use-uot --uot-mode uot  --uot-tau 1e6             # 3. OT cân bằng
+--use-uot --uot-mode uot  --uot-tau 1.0             # 4. UOT
+```
+
+Mỗi nhánh trả lời một câu hỏi khác nhau, và **thiếu nhánh 2 là mất bài**:
+
+| so sánh | trả lời |
+|---|---|
+| 2 vs 1 | thêm 402.456 tham số có ích không |
+| 3 vs 2 | **cấu trúc vận chuyển** có ích, hay chỉ là thêm dung lượng |
+| 4 vs 3 | **nới lỏng biên** có ích, tức chữ "unbalanced" có căn cứ |
+
+Nhánh 2 dùng softmax theo hàng trên **cùng ma trận chi phí**, cùng `norm`/`proj`/gate.
+Softmax không có tham số nên số tham số **khớp chính xác**, không phải xấp xỉ.
+
+Nhánh 2 **không** được nhân khối lượng. `attention_plan` chuẩn hoá theo hàng nên
+`row_mass` đúng bằng 1/N, nhưng `col_mass` tự do và đo được trải 0,0000–3,7113 — mạnh
+hơn cả nhánh UOT (0,1424–1,1419). Để nguyên thì nhánh đối chứng được trao đúng cơ chế
+mà thí nghiệm đang đi kiểm. Xem `models/uot.py`, nhánh `if self.mode != 'attn'`.
+
+Kiểm chứng trước khi chạy: `python3 tools/verify_attn.py` và `python3 tools/verify_seed.py`.
+
+Nếu 3 ≈ 4 thì tính "unbalanced" không đóng góp gì — và phải nói thẳng điều đó.
 
 ## 7. Điều cần biết trước khi tinh chỉnh
 

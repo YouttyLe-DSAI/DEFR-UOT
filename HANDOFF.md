@@ -2,6 +2,15 @@
 
 Cập nhật: 2026-08-31 · Branch `feat/uot-fusion` · Mọi thứ đã push
 
+> ## ⚠ ĐỌC `BAT_DAU_TU_DAY.md` TRƯỚC
+>
+> Cập nhật 01/09: **hướng B (UOT hậu kiểm) đã đo đầy đủ và âm tính** — sáu thí
+> nghiệm OT độc lập, không cái nào dương. Mục "Việc tiếp theo" bên dưới, và câu
+> *"Hướng B là hướng đang theo đuổi"*, **đã lỗi thời**.
+>
+> Hướng đang chạy là **hướng A**, dưới dạng ablation 4 nhánh trên hai máy. Xem
+> `BAT_DAU_TU_DAY.md`. Phần bối cảnh còn lại của file này vẫn đúng và vẫn nên đọc.
+
 Đọc file này trước khi tiếp tục ở một phiên/máy khác.
 
 ---

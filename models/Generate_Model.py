@@ -118,7 +118,8 @@ class GenerateModel(nn.Module):
                           eps=getattr(args, 'uot_eps', 0.05),
                           tau=getattr(args, 'uot_tau', 1.0),
                           n_iters=getattr(args, 'uot_iters', 10),
-                          detach_plan=getattr(args, 'uot_detach', False))
+                          detach_plan=getattr(args, 'uot_detach', False),
+                          mode=getattr(args, 'uot_mode', 'uot'))
                 for _ in range(len(self.image_encoder.blocks))])
 
     def _build_audio_model(self, model_name='vit_base_patch16', drop_path_rate=0.1, global_pool=False, mask_2d=True, use_custom_patch=False, ckpt_path='audiomae_pretrained.pth'):

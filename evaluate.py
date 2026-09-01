@@ -48,8 +48,12 @@ def parse_args():
                              'not directly comparable to them.')
 
     # --- Unbalanced Optimal Transport fusion ---
-    # These MUST match the flags used at training time, otherwise the
-    # architecture differs from the checkpoint and load_state_dict fails.
+    # These must match the flags used at training time, and load_state_dict will
+    # NOT catch it if they do not. mode/tau/eps/iters are plain attributes on
+    # UOTFusion, absent from the state_dict, so every arm loads into every other
+    # arm with zero missing or unexpected keys -- and then computes the wrong
+    # thing. That is why they are read back from the checkpoint below instead of
+    # being trusted from the command line.
     parser.add_argument('--eval-num-classes', type=int, default=None,
                         help='score using only the first N logits (MAFW model -> 7 classes)')
     parser.add_argument('--test-annotation', type=str, default=None,
@@ -59,10 +63,16 @@ def parse_args():
                         help='replace every spectrogram with the constant a missing .wav '
                              'produces, to measure what the audio branch actually contributes')
     parser.add_argument('--use-uot', action='store_true')
-    parser.add_argument('--uot-eps', type=float, default=0.05)
-    parser.add_argument('--uot-tau', type=float, default=1.0)
-    parser.add_argument('--uot-iters', type=int, default=10)
-    parser.add_argument('--uot-detach', action='store_true')
+    parser.add_argument('--uot-eps', type=float, default=None)
+    parser.add_argument('--uot-tau', type=float, default=None)
+    # All four default to None on purpose, so we can tell "user asked for this" from
+    # "argparse filled it in". None of mode/tau/eps/iters lives in the state_dict --
+    # they are plain Python attributes on UOTFusion -- so every arm loads cleanly into
+    # every other arm and the mismatch is invisible. tau in particular is the ONLY
+    # thing separating the balanced arm (1e6) from the unbalanced one (1.0).
+    parser.add_argument('--uot-iters', type=int, default=None)
+    parser.add_argument('--uot-mode', type=str, default=None, choices=['uot', 'attn'])
+    parser.add_argument('--uot-detach', action='store_true', default=None)
 
     args = parser.parse_args()
     return args
@@ -82,6 +92,34 @@ def main(set, args):
     if args.test_annotation:
         test_annotation_file_path = args.test_annotation.format(fold=data_set)
         print('Cross-corpus evaluation on: ' + test_annotation_file_path)
+
+    # Doc uot_mode TU CHECKPOINT, dung tin dong lenh. Nhanh 'attn' va 'uot' co
+    # ten va so tham so GIONG HET nhau, nen nap nham che do van thanh cong,
+    # khong mot canh bao nao, va tinh sai toan bo. Day dung loai loi am tham da
+    # tra gia ba lan trong du an nay -- lan nay chan truoc.
+    if args.use_uot:
+        ck = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
+        old = ck.get('args')
+        ck_fold = ck.get('fold')
+        del ck
+        # MAC DINH cua ban truoc khi co viec luu args -- chi dung khi checkpoint cu.
+        MD = {'uot_mode': 'uot', 'uot_tau': 1.0, 'uot_eps': 0.05,
+              'uot_iters': 10, 'uot_detach': False}
+        for k, mac_dinh in MD.items():
+            saved = getattr(old, k, None) if old is not None else None
+            truyen = getattr(args, k)
+            if truyen is None:
+                setattr(args, k, saved if saved is not None else mac_dinh)
+            elif saved is not None and saved != truyen:
+                raise SystemExit(
+                    f"DUNG LAI: checkpoint train bang {k}={saved!r} nhung dong lenh "
+                    f"truyen {truyen!r}.\n  Cac nhanh co cung ten va shape tham so nen "
+                    f"nap van sach, chi la tinh sai. Bo co do di de lay tu checkpoint.")
+        if old is None:
+            print('CANH BAO: checkpoint khong luu args -- dung mac dinh ban cu. '
+                  'Neu day la nhanh attn hoac tau=1e6 thi so bao cao SE SAI.')
+        print('uot: ' + '  '.join(f'{k}={getattr(args, k)}' for k in MD)
+              + f'  fold={ck_fold}')
 
     model = GenerateModel(args=args)
     model = torch.nn.DataParallel(model).cuda()

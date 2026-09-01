@@ -19,6 +19,7 @@ import numpy as np
 import itertools
 import datetime
 from dataloader.video_dataloader import train_data_loader, test_data_loader
+from tracking import Tracker, git_sha, gpu_name
 from sklearn.metrics import confusion_matrix
 import tqdm
 import warnings
@@ -26,11 +27,46 @@ warnings.filterwarnings("ignore", category=UserWarning)
 import random
 
 seed = 1
-random.seed(seed)  
-np.random.seed(seed) 
+random.seed(seed)
+np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 torch.cuda.manual_seed_all(seed)
+
+
+def set_seed(s):
+    """Reseed every generator that touches this run.
+
+    Seeding once at import is not enough for an ablation. Building the model
+    draws from the global RNG, and --use-uot builds 12 UOTFusion blocks with two
+    nn.Linear(128,128) each -- 24 extra draws that the baseline never makes.
+    DataLoader(shuffle=True) then takes its RandomSampler seed and its worker
+    base seed from that same global RNG, so the baseline arm ends up with a
+    different batch order, different sampled frames and different augmentation
+    than the three UOT arms. That is a second variable inside an experiment whose
+    whole premise is that only one thing changes, and nothing in the logs shows
+    it: they all still say seed=1.
+
+    Calling this at the top of each fold, and again before each epoch, makes the
+    data stream a pure function of (seed, fold, epoch) -- independent of how many
+    modules were constructed, and identical whether a run is resumed or not.
+    """
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
+    torch.cuda.manual_seed(s)
+    torch.cuda.manual_seed_all(s)
+
+
+def _worker_init(worker_id):
+    """Give each worker a seed derived from the loader generator, not the clock.
+
+    The frame picked per segment (dataloader/video_dataloader.py, np.random.randint)
+    and the augmentation both run inside workers, so they need seeding too.
+    """
+    s = (torch.initial_seed() + worker_id) % (2 ** 31)
+    random.seed(s)
+    np.random.seed(s)
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -58,6 +94,20 @@ def parse_args():
     parser.add_argument('--uot-tau', type=float, default=1.0,
                         help='marginal relaxation; large (e.g. 1e6) recovers balanced OT')
     parser.add_argument('--uot-iters', type=int, default=10)
+    parser.add_argument('--uot-mode', type=str, default='uot', choices=['uot', 'attn'],
+                        help="how the cost matrix becomes routing weights. 'uot' = "
+                             "Sinkhorn scaling (balanced when --uot-tau is large); "
+                             "'attn' = row-wise softmax, the control arm that isolates "
+                             "whether transport structure matters or just the added "
+                             "capacity. Identical parameter count either way.")
+    # --- Theo doi (tuy chon, chiu loi, khong anh huong so hoc) ---
+    parser.add_argument('--wandb', action='store_true',
+                        help='gui metric len wandb. Gom hai may vao mot dashboard. '
+                             'Hong thi bo qua, log.txt van la nguon su that.')
+    parser.add_argument('--wandb-project', type=str, default='defr-uot')
+    parser.add_argument('--tb', action='store_true',
+                        help='ghi TensorBoard vao <log_dir>/tb')
+
     parser.add_argument('--uot-detach', action='store_true',
                         help='treat the transport plan as fixed routing weights (no backprop through the solver)')
 
@@ -92,9 +142,14 @@ def parse_args():
     return args
 
 def main(set, args):
-    
+
     data_set = set+1
-    
+
+    # Reseed per fold, BEFORE anything draws from the RNG. Without this the fold
+    # loop below just continues whatever state the previous fold left behind, so
+    # fold 3 of a --folds 1 2 3 4 5 run differs from fold 3 of a --folds 3 run.
+    set_seed(seed * 100 + data_set)
+
     if args.dataset == "DFEW":
         print("*********** DFEW Dataset Fold  " + str(data_set) + " ***********")
         log_txt_path = './log/' + 'DFEW-' + time_str + '-set' + str(data_set) + '-log/' + 'log.txt'
@@ -254,12 +309,17 @@ def main(set, args):
                                  duration=1,
                                  image_size=args.img_size)
 
+    # Own generator, so the shuffle order comes from (seed, fold, epoch) and not
+    # from a global RNG whose state depends on how many modules the arm built.
+    train_gen = torch.Generator()
     train_loader = torch.utils.data.DataLoader(train_data,
                                                batch_size=args.batch_size,
                                                shuffle=True,
                                                num_workers=args.workers,
                                                pin_memory=True,
-                                               drop_last=True)
+                                               drop_last=True,
+                                               generator=train_gen,
+                                               worker_init_fn=_worker_init)
 
     val_loader = torch.utils.data.DataLoader(test_data,
                                              batch_size=args.batch_size,
@@ -273,8 +333,45 @@ def main(set, args):
         # session dies partway: without the optimizer and the cosine schedule the
         # run would restart its learning-rate cycle and stop being the same
         # experiment.
+        # --folds vang mat nghia la chay TAT CA fold -- dung truong hop nguy hiem
+        # nhat, nen phai tinh no la nhieu fold chu khong phai mot.
+        nhieu_fold = (not args.folds) or len(args.folds) > 1
+        if '{fold}' not in args.resume_training and nhieu_fold:
+            raise SystemExit(
+                'DUNG LAI: resume nhieu fold nhung --resume-training khong chua {fold}.\n'
+                '  str.format tren chuoi khong co {fold} tra ve NGUYEN chuoi, nen fold 4\n'
+                '  va 5 se nap trong so cua fold 3 -- da train tren du lieu chong lan\n'
+                '  test cua chung. So se dep gia tao, khong mot canh bao nao.')
         rt = args.resume_training.format(fold=data_set)
         ck = torch.load(rt, map_location='cpu', weights_only=False)
+
+        # Doi chieu cau hinh TRUOC khi nap. Ba nhanh attn / tau=1e6 / tau=1.0 co
+        # ten va shape state_dict GIONG HET nhau (mode/tau/eps chi la thuoc tinh
+        # Python, khong nam trong state_dict), nen load_state_dict strict=True van
+        # nap sach 100%. Quen mot co la duoc checkpoint lai: 14 epoch nhanh nay,
+        # 11 epoch nhanh kia, log tu mau thuan voi chinh no.
+        old = ck.get('args')
+        if old is None:
+            raise SystemExit(
+                'DUNG LAI: checkpoint khong luu args nen khong kiem duoc cau hinh.\n'
+                '  Day la ban truoc khi co co --uot-mode. Train lai tu dau.')
+        for k in ('use_uot', 'uot_mode', 'uot_tau', 'uot_eps', 'uot_iters', 'uot_detach',
+                  'num_classes', 'img_size', 'temporal_layers', 'lr', 'epochs',
+                  'batch_size', 'weight_decay', 'dataset',
+                  'train_annotation', 'test_annotation'):
+            a, b = getattr(old, k, None), getattr(args, k, None)
+            if a != b:
+                raise SystemExit(
+                    f'DUNG LAI: {k} lech nhau. checkpoint={a!r} vs dong lenh={b!r}\n'
+                    f'  Nap tiep se tao checkpoint lai giua hai cau hinh.')
+        ck_fold = ck.get('fold')
+        if ck_fold is not None and ck_fold != data_set:
+            raise SystemExit(
+                f'DUNG LAI: checkpoint thuoc fold {ck_fold} nhung dang chay fold {data_set}.\n'
+                f'  Nap tiep la ro ri tap test.')
+        print(f"resume: khop cau hinh (uot_mode={getattr(old, 'uot_mode', None)}, "
+              f"uot_tau={getattr(old, 'uot_tau', None)}, fold={ck_fold})")
+
         model.load_state_dict(ck['state_dict'])
         optimizer.load_state_dict(ck['optimizer'])
         if 'scheduler' in ck:
@@ -292,7 +389,21 @@ def main(set, args):
         if start_epoch >= args.epochs:
             print('  already finished -- nothing to do')
 
+    # Cua so theo doi. Chiu loi hoan toan: mat mang hay chua cai goi cung khong
+    # lam do run. log.txt van la nguon su that.
+    tracker = Tracker(args, fold=data_set, log_dir=os.path.dirname(log_txt_path),
+                      sha=git_sha(), gpu=gpu_name())
+
     for epoch in range(start_epoch, args.epochs):
+
+        # Pin the data stream to (seed, fold, epoch). Two consequences that both
+        # matter here: the four arms see identical batches despite building
+        # different numbers of modules, and a run resumed at epoch 14 replays
+        # exactly what an uninterrupted run would have seen -- so no RNG state
+        # has to be carried in the checkpoint.
+        epoch_seed = seed * 100000 + data_set * 1000 + epoch
+        set_seed(epoch_seed)
+        train_gen.manual_seed(epoch_seed)
 
         inf = '********************' + str(epoch) + '********************'
         start_time = time.time()
@@ -315,11 +426,17 @@ def main(set, args):
         # remember best acc and save checkpoint
         is_best = val_acc > best_acc
         best_acc = max(val_acc, best_acc)
+        # Luu ca args: cac nhanh ablation ('uot' vs 'attn') co ten va so tham so
+        # GIONG HET nhau, nen khong ghi lai che do thi khong cach nao biet
+        # checkpoint nay train bang gi -- va nap nham se chay im lang, sai ket qua.
+        # evaluate.py doc lai truong nay de tu chon dung che do.
         save_checkpoint({'epoch': epoch + 1,
                          'scheduler': scheduler.state_dict(),
                          'state_dict': model.state_dict(),
                          'best_acc': best_acc,
                          'optimizer': optimizer.state_dict(),
+                         'args': args,
+                         'fold': data_set,
                          'recorder': recorder}, is_best,
                         checkpoint_path)
 
@@ -334,12 +451,33 @@ def main(set, args):
             f.write('The best accuracy: ' + str(best_acc.item()) + '\n')
             f.write('An epoch time: ' + str(epoch_time) + 's' + '\n')
 
+        tracker.epoch(epoch,
+                      train_acc=float(train_acc), train_loss=float(train_los),
+                      val_acc=float(val_acc), val_loss=float(val_los),
+                      lr=current_learning_rate_0, epoch_time=epoch_time)
+        if args.use_uot:
+            tracker.gates(epoch, uot_gate_values(model))
+
     if args.use_uot:
         report_uot_gates(model, log_txt_path)
 
     last_uar, last_war = computer_uar_war(val_loader, model, checkpoint_path, log_confusion_matrix_path, log_txt_path, data_set, args.class_names)
-  
+
+    tracker.final(last_uar, last_war)
+    tracker.close()
     return last_uar, last_war
+
+
+def uot_gate_values(model):
+    """The raw gate scalars, for per-epoch tracking.
+
+    Watching these live is the cheapest early warning there is: if they are
+    still at zero by epoch 5, the run is measuring the baseline a second time
+    and there is no point spending the remaining 20 epochs on it.
+    """
+    return {n.split('uot_fusion.')[-1]: float(p)
+            for n, p in model.named_parameters()
+            if 'uot_fusion' in n and 'gate' in n}
 
 
 def report_uot_gates(model, log_txt_path):
@@ -459,16 +597,39 @@ def validate(val_loader, model, criterion, args, log_txt_path):
 
 
 def save_checkpoint(state, is_best, checkpoint_path):
-    """Write the latest epoch, and keep a copy of the best one beside it.
+    """Write the latest epoch. One file, deliberately -- there is no best-epoch copy.
 
-    The original ignored is_best and overwrote a single file, so the best model
-    was gone the moment a later epoch did worse -- and a long run that ends on a
-    bad epoch reports that epoch. model.pth stays the resume point; the reported
-    figures can come from either, as long as both arms use the same rule.
+    The protocol we are reproducing is explicit (MMA-DFER, CVPR 2024 Workshops, 4.2):
+    "We train the models on the train set and report the result of final checkpoint,
+    i.e., at 25th epoch, on the test set." No early stopping, no best-checkpoint
+    selection. Deviating forfeits the right to compare against the published numbers.
+
+    An earlier version also wrote model_best.pth. That is worse than a protocol
+    deviation: this codebase has no validation split, so `is_best` is decided by
+    val_loader, which is built from the *test* annotation (see the two call sites of
+    test_data_loader). A figure taken from that file is the maximum over 25 test
+    evaluations -- an optimistically biased estimate obtained by peeking at the test
+    set. Writing the file at all leaves a loaded gun: `evaluate.py --checkpoint
+    .../model_best.pth` runs perfectly happily and reports the leaked number.
+
+    `is_best` is still tracked and written to the log ("The best accuracy: ..."), so
+    the training curve and its peak remain visible for diagnosing instability. What
+    is gone is the weights -- and with them, 780 MB per run and the chance of
+    reporting them by accident.
+
+    Written atomically. With model_best.pth gone there is exactly one restore point
+    per run, and it is rewritten ~780 MB at a time, 25 times per run, 20 runs -- 500
+    chances for a power cut, an OOM kill or a full disk to land mid-write. Writing
+    straight to the final path would leave a truncated file and lose the whole run.
+    os.replace is atomic within a filesystem, so the file on disk is always either
+    the previous epoch intact or the new one intact, never half of either.
     """
-    torch.save(state, checkpoint_path)
-    if is_best:
-        torch.save(state, checkpoint_path.replace('model.pth', 'model_best.pth'))
+    tmp = checkpoint_path + '.tmp'
+    with open(tmp, 'wb') as f:
+        torch.save(state, f)
+        f.flush()
+        os.fsync(f.fileno())          # bytes on the platter, not just in page cache
+    os.replace(tmp, checkpoint_path)
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""

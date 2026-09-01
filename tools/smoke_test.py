@@ -36,6 +36,9 @@ def parse_args():
     p.add_argument('--uot-eps', type=float, default=0.05)
     p.add_argument('--uot-tau', type=float, default=1.0)
     p.add_argument('--uot-iters', type=int, default=10)
+    # Thieu co nay thi Generate_Model roi ve getattr(args,'uot_mode','uot') va
+    # in "SMOKE TEST PASSED" -- nhung nhanh attn chua bao gio duoc cham toi.
+    p.add_argument('--uot-mode', type=str, default='uot', choices=['uot', 'attn'])
     p.add_argument('--uot-detach', action='store_true')
     return p.parse_args()
 

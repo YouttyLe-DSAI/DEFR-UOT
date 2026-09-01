@@ -14,6 +14,7 @@ preprocessing produced a different sampling than the original release.
 import argparse
 import glob
 import os
+import sys
 
 OLD_ROOTS = {
     'DFEW': '/scratch/chumache/dfer_datasets/dfew/clip_224x224',
@@ -49,6 +50,20 @@ def main():
         print('!! WARNING: dataloader/video_dataloader.py selects the MAFW audio branch\n'
               '   with `elif "mfaw" in path`. Your new root does not contain "mfaw",\n'
               '   so audio loading will crash. Rename the directory or patch the loader.')
+    if args.dataset == 'MAFW':
+        # Duong dan audio duoc SUY RA tu duong dan anh bang thay chuoi
+        # clips_faces -> clips_wav. Mot cay 224 moi resize chi co anh, khong co
+        # wav; luc do video_dataloader.py gan fbank = torch.zeros(512,128) va di
+        # tiep -- KHONG mot canh bao nao. Ca bon nhanh se train tren audio rong,
+        # va so lieu trong van hop ly. Chan tai day, truoc khi ton mot gio GPU nao.
+        wav_root = new_root.replace('clips_faces', 'clips_wav')
+        if wav_root == new_root or not os.path.isdir(wav_root):
+            sys.exit(
+                'DUNG LAI: khong thay {}\n'
+                '  Dataloader suy duong dan audio tu duong dan anh (clips_faces ->\n'
+                '  clips_wav). Thieu thu muc nay thi fbank ra TOAN SO 0, im lang,\n'
+                '  va ca bon nhanh mat hoan toan nhanh audio.\n'
+                '  Sua: ln -s <cay_goc>/mfaw/clips_wav {}'.format(wav_root, wav_root))
     if args.dataset == 'DFEW' and 'clip_224x224' not in new_root:
         print('!! WARNING: the DFEW audio branch is selected by `if "clip_224x224" in path`.\n'
               '   Your new root does not contain "clip_224x224".')
