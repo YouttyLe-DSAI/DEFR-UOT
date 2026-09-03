@@ -27,8 +27,15 @@ if [ -z "$FOLDS" ]; then
 fi
 
 # --- Cau hinh chung. Doi o day thi doi cho CA BON nhanh, khong the lech. ---
-DATASET=DFEW
-IMG_SIZE=160
+# DATASET va IMG_SIZE dat qua bien moi truong de khong phai sua file:
+#   DATASET=MAFW ./run_ablation.sh 1 2
+# So lop lay mac dinh cua main.py -- DFEW 7, MAFW 11 -- dung nhu paper bao cao.
+DATASET="${DATASET:-DFEW}"
+IMG_SIZE="${IMG_SIZE:-160}"
+case "$DATASET" in
+    DFEW|MAFW) ;;
+    *) echo "DUNG LAI: DATASET phai la DFEW hoac MAFW, dang la '$DATASET'"; exit 1 ;;
+esac
 # So worker. Dem loi CPU cho ro rang: `$(( $(nproc) - 2 ))` neu nproc that bai se
 # ra -2, roi dong ke tiep nang len 2 -- tuc tut tu 14 worker xuong 2 ma khong bao
 # gi. Tren workload nghen dataloader do la mat gan het thong luong.
@@ -101,6 +108,45 @@ if [ "${WANDB:-0}" = "1" ]; then
         echo "  sua: pip install wandb && wandb login     (hoac bo WANDB=1)"
         exit 1
     }
+fi
+
+# MAFW co ba cai bay ma DFEW khong co. Ca ba deu hong IM LANG, va ca ba deu
+# lam mat nhanh audio tren CA BON nhanh -- tuc pha ca loat ma so lieu van trong
+# hop ly. Kiem trong 5 giay o day, thay vi phat hien sau 30 gio.
+if [ "$DATASET" = "MAFW" ]; then
+    ANN="annotation/MAFW_set_1_train_faces.txt"
+    [ -f "$ANN" ] || { echo "DUNG LAI: khong thay $ANN"; exit 1; }
+    DUONG_DAN=$(head -1 "$ANN" | cut -d' ' -f1)
+
+    # 1. dataloader nhan dien MAFW bang chuoi 'mfaw' (viet sai chinh ta, co y).
+    #    Thieu no thi di nhanh DFEW va fbank ra toan 0.
+    case "$DUONG_DAN" in
+        *mfaw*) ;;
+        *) echo "DUNG LAI: duong dan MAFW khong chua chuoi 'mfaw':"
+           echo "  $DUONG_DAN"
+           echo "  dataloader nhan dien MAFW bang chuoi nay; thieu -> fbank toan 0."
+           exit 1 ;;
+    esac
+
+    # 2. duong dan audio SUY RA tu duong dan anh. Thieu clips_wav -> fbank toan 0.
+    WAV_DIR=$(dirname "$DUONG_DAN" | sed 's#clips_faces#clips_wav#')
+    [ -d "$WAV_DIR" ] || {
+        echo "DUNG LAI: khong thay thu muc audio $WAV_DIR"
+        echo "  sua: ln -s <cay_goc>/mfaw/clips_wav $WAV_DIR"
+        exit 1; }
+
+    # 3. thu muc frame phai ton tai va so frame trong annotation phai khop.
+    #    Quy uoc MAFW la 'so anh - 1'; lech la lay mau nham frame, im lang.
+    read -r P N _ < "$ANN"
+    [ -d "$P" ] || { echo "DUNG LAI: khong thay thu muc frame $P"; exit 1; }
+    THUC=$(find "$P" -name '*.jpg' | wc -l | tr -d ' ')
+    if [ "$N" -ne $(( THUC - 1 )) ]; then
+        echo "DUNG LAI: annotation ghi $N frame, tren dia co $THUC anh."
+        echo "  Quy uoc MAFW la 'so anh - 1', tuc phai ghi $(( THUC - 1 ))."
+        echo "  Lech la lay mau nham frame, khong bao loi."
+        exit 1
+    fi
+    echo "  MAFW    DAT  ('mfaw' co, clips_wav co, so frame = so anh - 1)"
 fi
 
 python tools/verify_seed.py > /dev/null || { echo "HONG: verify_seed"; exit 1; }
@@ -208,9 +254,15 @@ arm_flags() {
 }
 
 da_xong() {
-    # Da co run nao cua (nhanh, fold) nay chay den dong UAR chua?
+    # Da co run nao cua (TAP, nhanh, fold) nay chay den dong UAR chua?
+    #
+    # Tien to $DATASET la BAT BUOC. Thu muc log ten
+    # log/<TAP>-<timestamp><exper_name>-set<N>-log, ma exper_name khong chua ten
+    # tap. Glob khong co tien to se khop thu muc cua TAP KHAC: sau khi DFEW chay
+    # xong, moi run MAFW deu bi coi la "da xong" va bo qua -- ca 20 run, in
+    # "BO QUA", bao chay 0 run, trong y het thanh cong.
     local ten="$1"
-    for d in log/*"$ten"-set*-log; do
+    for d in log/"$DATASET"-*"$ten"-set*-log; do
         [ -f "$d/log.txt" ] && grep -q '^UAR: ' "$d/log.txt" && return 0
     done
     return 1
