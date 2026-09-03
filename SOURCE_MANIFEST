@@ -1,0 +1,65 @@
+# Danh sach file dinh nghia thi nghiem. Dung de bam ma nguon.
+#
+# LIET KE chu khong loai tru. Danh sach loai tru la vo han: may 3090 co
+# annotation.orig/ va env_local.sh -- ca hai deu do chinh SERVER.md huong
+# dan tao ra -- nen find bat 54 file trong khi git bat 51. Khong the doan
+# truoc moi thu se xuat hien trong thu muc lam viec; co the liet ke chinh
+# xac thu gi thuoc ve thi nghiem.
+#
+# Duong dan KHONG co tien to ./  -- git ls-files cho 'main.py' con find cho
+# './main.py', ma sha256sum bam ca duong dan, nen hai nhanh se ra hai bam
+# khac nhau cho cung mot cay neu khong thong nhat.
+#
+# Sinh lai sau khi them/xoa file nguon:
+#   bash tools/make_manifest.sh
+AudioMAE/audio_models_vit.py
+AudioMAE/util/crop.py
+AudioMAE/util/datasets.py
+AudioMAE/util/lars.py
+AudioMAE/util/lr_decay.py
+AudioMAE/util/lr_sched.py
+AudioMAE/util/misc.py
+AudioMAE/util/patch_embed.py
+AudioMAE/util/pos_embed.py
+AudioMAE/util/stat.py
+annotation/preprocess_annotation.py
+annotation/preprocessing.py
+data_utils/extract_faces_mfaw.py
+data_utils/process_ann_mfaw.py
+dataloader/video_dataloader.py
+dataloader/video_transform.py
+evaluate.py
+main.py
+models/Generate_Model.py
+models/Temporal_Model.py
+models/models_vit.py
+models/uot.py
+mp42wav.sh
+run_ablation.sh
+scheduler.py
+tools/check_ckpt.py
+tools/check_data.py
+tools/check_notebook.py
+tools/compare_runs.py
+tools/extract_all.sh
+tools/extract_features.py
+tools/kaggle_setup.py
+tools/make_mafw7.py
+tools/resize_frames.py
+tools/retarget_annotations.py
+tools/smoke_test.py
+tools/summarize.py
+tools/verify_attn.py
+tools/verify_seed.py
+tools/verify_uot.py
+tracking.py
+train_DFEW.sh
+train_DFEW_uot.sh
+train_MAFW.sh
+train_MAFW_uot.sh
+uot_crosscorpus/batch.py
+uot_crosscorpus/data.py
+uot_crosscorpus/methods.py
+uot_crosscorpus/metrics.py
+uot_crosscorpus/run.py
+uot_crosscorpus/uot.py

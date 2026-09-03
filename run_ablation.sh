@@ -212,16 +212,39 @@ bam_nguon() {
     #
     # Ke ca .sh: arm_flags() nam trong file nay va giu co cua ca bon nhanh. Doi
     # mot dong o do la DOI THI NGHIEM, trong khi bam chi .py van khop hoan toan.
-    {
-        if git rev-parse --git-dir > /dev/null 2>&1; then
-            git ls-files -z '*.py' '*.sh'
-        else
-            find . \( -path './.git' -o -path './log' -o -path './data' \
-                      -o -path './wandb' -o -path './.tools' -o -name '.venv*' \
-                      -o -name '__pycache__' \) -prune -o \
-                   \( -name '*.py' -o -name '*.sh' \) -print0
-        fi
-    } | LC_ALL=C sort -z | xargs -0 $h | $h | cut -c1-12
+    # LIET KE, khong loai tru. Ban truoc dung `find` voi danh sach loai tru va
+    # gap dung hai loi ma cach nay khong the co:
+    #
+    #   - danh sach loai tru la VO HAN. May 3090 co annotation.orig/ va
+    #     env_local.sh -- ca hai do chinh SERVER.md huong dan tao -- nen find bat
+    #     54 file trong khi git bat 51. Khong doan truoc duoc moi thu se xuat hien
+    #     trong thu muc lam viec; nhung liet ke chinh xac thu gi thuoc thi nghiem
+    #     thi duoc.
+    #
+    #   - TIEN TO ./ khac nhau giua hai nhanh. `git ls-files` cho 'main.py' con
+    #     `find .` cho './main.py', ma sha256sum bam CA DUONG DAN. Cung mot cay ra
+    #     hai bam khac nhau -- dung cai loi "hai may sinh hai dinh danh" ma ban va
+    #     truoc dinh sua, tai tao lai o tang chuoi duong dan.
+    #
+    # Manifest duoc track trong repo nen may khong co git van biet file nao thuoc
+    # ve no.
+    [ -f SOURCE_MANIFEST ] || { echo "thieu SOURCE_MANIFEST" >&2; return 1; }
+    grep -v '^#' SOURCE_MANIFEST | grep -v '^[[:space:]]*$' \
+        | LC_ALL=C sort | tr '\n' '\0' | xargs -0 $h | $h | cut -c1-12
+}
+
+# Manifest phai theo kip ma nguon. Chi kiem duoc khi co git; may khong git tin
+# vao ban da commit, dung nhu no tin vao chinh ma nguon.
+kiem_manifest() {
+    git rev-parse --git-dir > /dev/null 2>&1 || return 0
+    local a b
+    a=$(grep -v '^#' SOURCE_MANIFEST | grep -v '^[[:space:]]*$' | LC_ALL=C sort)
+    b=$(git ls-files '*.py' '*.sh' | LC_ALL=C sort)
+    [ "$a" = "$b" ] && return 0
+    echo "DUNG LAI: SOURCE_MANIFEST khong khop voi ma nguon."
+    diff <(echo "$a") <(echo "$b") | head -10
+    echo "  sua: bash tools/make_manifest.sh && git add SOURCE_MANIFEST"
+    return 1
 }
 
 # Bam noi dung tinh o CA HAI nhanh, khong chi nhanh khong-git.
@@ -235,8 +258,10 @@ bam_nguon() {
 #
 # Gio: SHA cho lich su, bam cho doi chieu cheo may. Ghi ca hai.
 # `exit 1` ben trong $(...) chi thoat SUBSHELL nen bam_nguon tra ve ma loi.
+kiem_manifest || exit 1
 BAM=$(bam_nguon) || {
-    echo "DUNG LAI: khong co ca sha256sum lan shasum, khong bam duoc ma nguon."
+    echo "DUNG LAI: khong bam duoc ma nguon (thieu SOURCE_MANIFEST, hoac"
+    echo "  khong co ca sha256sum lan shasum)."
     exit 1
 }
 [ -n "$BAM" ] || { echo "DUNG LAI: bam ma nguon ra rong"; exit 1; }
