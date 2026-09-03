@@ -831,19 +831,23 @@ class RecorderMeter(object):
         plt.ylabel('accuracy', fontsize=16)
 
         y_axis[:] = self.epoch_accuracy[:, 0]
-        plt.plot(x_axis, y_axis, color='g', linestyle='-', label='train-accuracy', lw=2)
+        # Mot diem don le khong ve ra gi neu chi co linestyle -- anh chi con luoi
+        # va chu giai, trong y het nhu run bi hong. Da gay nham lan that khi
+        # chay thu 1 epoch de kiem tra duong ong.
+        mk = 'o' if self.total_epoch == 1 else None
+        plt.plot(x_axis, y_axis, color='g', linestyle='-', marker=mk, label='train-accuracy', lw=2)
         plt.legend(loc=4, fontsize=legend_fontsize)
 
         y_axis[:] = self.epoch_accuracy[:, 1]
-        plt.plot(x_axis, y_axis, color='y', linestyle='-', label='valid-accuracy', lw=2)
+        plt.plot(x_axis, y_axis, color='y', linestyle='-', marker=mk, label='valid-accuracy', lw=2)
         plt.legend(loc=4, fontsize=legend_fontsize)
 
         y_axis[:] = self.epoch_losses[:, 0]
-        plt.plot(x_axis, y_axis, color='g', linestyle=':', label='train-loss-x50', lw=2)
+        plt.plot(x_axis, y_axis, color='g', linestyle=':', marker=mk, label='train-loss-x50', lw=2)
         plt.legend(loc=4, fontsize=legend_fontsize)
 
         y_axis[:] = self.epoch_losses[:, 1]
-        plt.plot(x_axis, y_axis, color='y', linestyle=':', label='valid-loss-x50', lw=2)
+        plt.plot(x_axis, y_axis, color='y', linestyle=':', marker=mk, label='valid-loss-x50', lw=2)
         plt.legend(loc=4, fontsize=legend_fontsize)
 
         if save_path is not None:

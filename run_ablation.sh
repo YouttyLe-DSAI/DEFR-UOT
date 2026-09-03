@@ -139,7 +139,15 @@ if [ "$DATASET" = "MAFW" ]; then
     #    Quy uoc MAFW la 'so anh - 1'; lech la lay mau nham frame, im lang.
     read -r P N _ < "$ANN"
     [ -d "$P" ] || { echo "DUNG LAI: khong thay thu muc frame $P"; exit 1; }
-    THUC=$(find "$P" -name '*.jpg' | wc -l | tr -d ' ')
+    # -L la BAT BUOC: SERVER.md muc 4 dung data/stage/ toan bang symlink de gop
+    # hai shard MAFW ma khong nhan doi 56 GB, nen $P la symlink. `find` KHONG di
+    # vao symlink -- no coi symlink la file thuong va dem ra 0, roi cong bao
+    # "annotation ghi 103 frame, tren dia co 0 anh" va chan MOI lan chay MAFW du
+    # du lieu hoan toan dung.
+    #
+    # Kho thay o cho: `[ -d "$P" ]` ngay tren KHONG bat duoc, vi `-d` THI co di
+    # theo symlink. No xac nhan thu muc ton tai, roi dong ke tiep dem ra 0.
+    THUC=$(find -L "$P" -name '*.jpg' | wc -l | tr -d ' ')
     if [ "$N" -ne $(( THUC - 1 )) ]; then
         echo "DUNG LAI: annotation ghi $N frame, tren dia co $THUC anh."
         echo "  Quy uoc MAFW la 'so anh - 1', tuc phai ghi $(( THUC - 1 ))."
@@ -184,45 +192,83 @@ bam_nguon() {
     else
         return 1
     fi
-    find . -name '*.py' \
-        -not -path './.git/*' -not -path './log/*' -not -path '*/__pycache__/*' \
-        -print0 | sort -z | xargs -0 $h | $h | cut -c1-12
+
+    # DANH SACH FILE phai la ma nguon cua repo, khong phai moi thu trong thu muc.
+    # Ban truoc chi loai .git/, log/ va __pycache__, nen tren may dat venv TRONG
+    # repo (dung nhu SERVER.md muc 2 huong dan) no bam 23.513 file .py, trong do
+    # 44 la ma nguon con lai la .tools/ va .venv*/. Hai hau qua, ca hai deu pha
+    # dung muc dich cua viec bam:
+    #   - `pip install` mot goi bat ky la doi bam, ngay tren cung mot may
+    #   - hai may khong bao gio khop, tru khi trung ca noi dung venv
+    # Do chinh la chuyen da xay ra: 23.513 file ben 3090 so voi 46 ben 4090.
+    #
+    # LC_ALL=C la BAT BUOC. `sort` xep theo locale, ma repo co ca AudioMAE/ (hoa)
+    # lan annotation/ (thuong): trong C thi hoa dung truoc, trong en_US.UTF-8 thi
+    # khong. Cung mot tap file, hai thu tu, hai bam. Chuyen nay da gay bao dong
+    # gia that -- 3090 (en_US.UTF-8) va 4090 (C.UTF-8) ra hai so khac nhau tren
+    # cung mot commit sach tung byte, va mat mot vong dieu tra moi loai tru duoc
+    # gia thuyet "hai may dang chay hai ban ma khac nhau". Cung khuon loi voi
+    # shasum-vs-sha256sum da va o c8e8250, chi la tai xuat o tang sort.
+    #
+    # Ke ca .sh: arm_flags() nam trong file nay va giu co cua ca bon nhanh. Doi
+    # mot dong o do la DOI THI NGHIEM, trong khi bam chi .py van khop hoan toan.
+    {
+        if git rev-parse --git-dir > /dev/null 2>&1; then
+            git ls-files -z '*.py' '*.sh'
+        else
+            find . \( -path './.git' -o -path './log' -o -path './data' \
+                      -o -path './wandb' -o -path './.tools' -o -name '.venv*' \
+                      -o -name '__pycache__' \) -prune -o \
+                   \( -name '*.py' -o -name '*.sh' \) -print0
+        fi
+    } | LC_ALL=C sort -z | xargs -0 $h | $h | cut -c1-12
 }
 
-if command -v git > /dev/null 2>&1; then
-    # Khong `2>/dev/null` o day -- loi cua git can duoc nhin thay.
-    DIRTY=$(git status --porcelain -- '*.py')
+# Bam noi dung tinh o CA HAI nhanh, khong chi nhanh khong-git.
+#
+# Ban truoc chia doi: may co git chi lay SHA, may khong git chi lay bam. Nen
+# 4090 (co git) khong bao gio goi bam_nguon, 3090 (khong git) khong bao gio co
+# SHA, va dong "HAI MAY PHAI CO CUNG CON SO NAY" chi in o phia khong-git -- phia
+# kia khong biet la co gi de doi chieu. Phep so cheo may ma tai lieu dua vao la
+# BAT KHA THI VE CAU TRUC, khong phai do cau hinh sai. Hai may da phai tu chay
+# tay mot lenh bam ben ngoai script moi chung minh duoc.
+#
+# Gio: SHA cho lich su, bam cho doi chieu cheo may. Ghi ca hai.
+# `exit 1` ben trong $(...) chi thoat SUBSHELL nen bam_nguon tra ve ma loi.
+BAM=$(bam_nguon) || {
+    echo "DUNG LAI: khong co ca sha256sum lan shasum, khong bam duoc ma nguon."
+    exit 1
+}
+[ -n "$BAM" ] || { echo "DUNG LAI: bam ma nguon ra rong"; exit 1; }
+
+if command -v git > /dev/null 2>&1 && git rev-parse --git-dir > /dev/null 2>&1; then
+    # -uno: BO file untracked. `--porcelain` khong co no se liet ke ca `??`, nen
+    # bat ky .py nao trong cay lam viec deu chan run -- ke ca venv dat trong repo,
+    # dung nhu SERVER.md muc 2 huong dan (22.290 file tren may 3090). Y dinh cua
+    # cong la "ma nguon DA COMMIT phai sach", ma file chua track thi khong thuoc
+    # ma nguon da commit.
+    DIRTY=$(git status --porcelain -uno -- '*.py' '*.sh')
     if [ -n "$DIRTY" ]; then
-        echo "DUNG LAI: co thay doi .py chua commit. Hai may phai cung mot SHA."
+        echo "DUNG LAI: co thay doi .py/.sh chua commit. Hai may phai cung mot SHA."
         echo "$DIRTY"
         exit 1
     fi
     SHA=$(git rev-parse --short HEAD)
     [ -n "$SHA" ] || { echo "DUNG LAI: khong doc duoc git SHA"; exit 1; }
-    XUAT_XU="git=$SHA"
+    XUAT_XU="git=$SHA bam=$BAM"
 elif [ "${ALLOW_NO_GIT:-0}" = "1" ]; then
-    # `exit 1` ben trong $(...) chi thoat SUBSHELL, script van chay tiep voi SHA
-    # rong -- nen bam_nguon tra ve ma loi va kiem o day, ngoai subshell.
-    SHA=$(bam_nguon) || {
-        echo "DUNG LAI: khong co ca sha256sum lan shasum, khong bam duoc ma nguon."
-        exit 1
-    }
-    [ -n "$SHA" ] || { echo "DUNG LAI: bam ma nguon ra rong"; exit 1; }
-    XUAT_XU="bam_nguon=$SHA"
-    echo "  KHONG co git -- dung bam noi dung file .py thay cho SHA."
-    echo "  HAI MAY PHAI CO CUNG CON SO NAY: $SHA"
-    echo "  Khac nhau la hai may dang chay hai ban ma khac nhau."
+    SHA="(khong-git)"
+    XUAT_XU="bam=$BAM"
+    echo "  KHONG co git -- chi co bam noi dung, khong co lich su."
 else
     echo "DUNG LAI: khong co git."
-    echo "  Git dung de chung minh hai may chay cung mot ma nguon."
     echo "  Ba cach, theo thu tu uu tien:"
     echo "    1. sudo apt update && sudo apt install -y git"
     echo "    2. khong co root: cai git vao ./.tools/ (micromamba, ~150 MB)"
     echo "    3. ALLOW_NO_GIT=1 $0 $FOLDS"
-    echo "       -> dung bam noi dung .py thay SHA. Bao dam dung dieu can bao"
-    echo "          dam, chi la khong co lich su. Doi chieu con so giua hai may."
     exit 1
 fi
+echo "  BAM MA NGUON: $BAM   <-- hai may PHAI trung con so nay"
 
 GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | tr ' ' '_')
 echo "  SHA $SHA   GPU $GPU   workers $WORKERS"
