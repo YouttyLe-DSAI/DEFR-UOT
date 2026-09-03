@@ -45,6 +45,7 @@ tools/extract_all.sh
 tools/extract_features.py
 tools/kaggle_setup.py
 tools/make_mafw7.py
+tools/make_manifest.sh
 tools/resize_frames.py
 tools/retarget_annotations.py
 tools/smoke_test.py
